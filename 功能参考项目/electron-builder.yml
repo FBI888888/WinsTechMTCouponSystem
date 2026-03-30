@@ -1,0 +1,108 @@
+# electron-builder 配置文件
+# 文档: https://www.electron.build/configuration/configuration
+
+appId: com.wins.mt-qrcode-tools
+productName: 美团CK券码制作工具
+copyright: Copyright © 2025 聚合云&问世科技
+
+# 打包配置
+asar: true
+asarUnpack:
+  - node_modules/node-forge/**/*
+  - node_modules/bwip-js/**/*
+  - node_modules/qrcode/**/*
+
+# 压缩级别 (store, normal, maximum)
+compression: maximum
+
+# 包含的文件
+files:
+  - main.js
+  - preload.js
+  - AuthClient.js
+  - H5guard.js
+  - dist/**/*
+  - assets/**/*
+  - services/**/*
+  - package.json
+  - "!**/*.map"
+  - "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}"
+  - "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}"
+  - "!**/node_modules/*.d.ts"
+  - "!**/node_modules/.cache/**/*"
+  - "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}"
+  - "!**/._*"
+  - "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}"
+  - "!**/{thumbs.db,.flowconfig,.idea,.vs,.nyc_output}"
+  - "!**/{appveyor.yml,.travis.yml,circle.yml}"
+  - "!**/mtQrcodeTools/**/*"
+  - "!**/mtqrcodeweb/**/*"
+  - "!**/data/**/*"
+
+# 额外资源
+extraResources:
+  - from: assets/
+    to: assets/
+    filter:
+      - "**/*"
+
+# 额外文件（打包到应用根目录外）
+# 注意：data 文件夹由应用运行时自动创建，不再打包进安装包
+# 这样可以避免更新时覆盖用户的数据文件
+# extraFiles:
+#   - from: data/
+#     to: data/
+#     filter:
+#       - "!**/*.log"
+#       - "!**/cookies/**/*"
+#       - "!**/certs/**/*"
+
+# 输出目录
+directories:
+  output: dist-electron
+  buildResources: assets
+
+# Windows 配置
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  icon: assets/icon.ico
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  requestedExecutionLevel: asInvoker
+  # 签名配置（如有证书可启用）
+  # certificateFile: path/to/certificate.pfx
+  # certificatePassword: ${env.CERT_PASSWORD}
+
+# NSIS 安装程序配置
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  installerIcon: assets/icon.ico
+  uninstallerIcon: assets/icon.ico
+  installerHeaderIcon: assets/icon.ico
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 美团券码工具
+  installerLanguages:
+    - zh_CN
+  language: 2052
+  deleteAppDataOnUninstall: false
+  # 安装包许可协议（如有）
+  # license: LICENSE.txt
+  
+# 便携版配置
+portable:
+  artifactName: ${productName}-${version}-便携版.${ext}
+  # 便携版数据目录
+  requestExecutionLevel: user
+
+# 发布配置（如需自动更新可配置）
+# publish:
+#   provider: generic
+#   url: https://your-update-server.com/releases/

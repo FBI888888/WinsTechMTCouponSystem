@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tasklist)",
+      "Bash(curl -s http://127.0.0.1:8000/api/coupons/query -X POST -H 'Content-Type: application/json' -d '{\"\"\"\"coupon_codes\"\"\"\": [\"\"\"\"test123\"\"\"\"]}')",
+      "Bash(find d:/WebstormProjects/WinsTechMTCouponSystem/frontend/electron -type f -name *.js)",
+      "Bash(npm init:*)",
+      "Bash(dir \"d:\\\\WebstormProjects\\\\WinsTechMTCouponSystem\\\\frontend\")",
+      "Bash(find d:/WebstormProjects/WinsTechMTCouponSystem/frontend/src -type f -name *.vue -o -name *.js -o -name *.ts)",
+      "Bash(python migrations/add_last_scan_time.py)",
+      "Bash(node query_gift_coupon.js)",
+      "Bash(python query_gift_coupon.py)",
+      "Bash(ls -la \"d:/WebstormProjects/WinsTechMTCouponSystem/backend/\"*.js)"
+    ]
+  }
+}

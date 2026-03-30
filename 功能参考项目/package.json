@@ -1,0 +1,51 @@
+{
+  "name": "meituan-qrcode-tools",
+  "version": "2.6.0",
+  "description": "美团CK券码制作工具",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "concurrently --kill-others \"npm run watch\" \"wait-on http://localhost:3001 && electron .\"",
+    "watch": "vite",
+    "build": "vite build",
+    "package": "npm run build && electron-builder",
+    "package:win": "npm run build && electron-builder --win",
+    "package:portable": "npm run build && electron-builder --win portable",
+    "package:nsis": "npm run build && electron-builder --win nsis",
+    "package:dir": "npm run build && electron-builder --win --dir",
+    "clean": "rimraf dist dist-electron",
+    "rebuild": "npm run clean && npm run build",
+    "dist": "npm run rebuild && electron-builder --win"
+  },
+  "author": "聚合云&问世科技",
+  "license": "MIT",
+  "homepage": "https://github.com/your-repo",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-repo.git"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.16",
+    "concurrently": "^8.2.2",
+    "electron": "^28.3.3",
+    "electron-builder": "^24.9.1",
+    "postcss": "^8.4.32",
+    "rimraf": "^6.1.2",
+    "tailwindcss": "^3.3.6",
+    "vite": "^5.0.7",
+    "wait-on": "^7.2.0"
+  },
+  "dependencies": {
+    "@electron/remote": "^2.1.1",
+    "axios": "^1.6.2",
+    "bwip-js": "^4.1.0",
+    "exceljs": "^4.4.0",
+    "lucide-react": "^0.294.0",
+    "node-forge": "^1.3.3",
+    "qrcode": "^1.5.3",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  }
+}
