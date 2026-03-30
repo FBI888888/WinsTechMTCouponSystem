@@ -24,6 +24,7 @@ class MTAccount(Base):
     open_id = Column(String(100))
     open_id_cipher = Column(String(255))
     status = Column(Enum(AccountStatus, values_callable=lambda obj: [e.value for e in obj]), default=AccountStatus.UNCHECKED, index=True)
+    disabled = Column(Integer, default=0, index=True)  # 0=启用, 1=禁用
     last_check_time = Column(DateTime)
     last_scan_time = Column(DateTime)  # 最后扫描时间
     created_at = Column(DateTime, default=datetime.now)

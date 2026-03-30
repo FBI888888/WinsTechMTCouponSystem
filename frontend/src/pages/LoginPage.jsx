@@ -1,14 +1,27 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/authStore'
 
 function LoginPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [rememberMe, setRememberMe] = useState(true) // 默认开启
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const navigate = useNavigate()
   const login = useAuthStore((state) => state.login)
+
+  // 加载保存的账号密码
+  useEffect(() => {
+    const savedUsername = localStorage.getItem('remembered_username')
+    const savedPassword = localStorage.getItem('remembered_password')
+    if (savedUsername) {
+      setUsername(savedUsername)
+    }
+    if (savedPassword) {
+      setPassword(savedPassword)
+    }
+  }, [])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -18,6 +31,15 @@ function LoginPage() {
     const result = await login(username, password)
 
     if (result.success) {
+      // 如果勾选了记住账号，保存到localStorage
+      if (rememberMe) {
+        localStorage.setItem('remembered_username', username)
+        localStorage.setItem('remembered_password', password)
+      } else {
+        // 否则清除保存的数据
+        localStorage.removeItem('remembered_username')
+        localStorage.removeItem('remembered_password')
+      }
       navigate('/')
     } else {
       setError(result.error)
@@ -35,7 +57,7 @@ function LoginPage() {
               <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
             </svg>
           </div>
-          <h1 className="text-2xl font-bold text-gray-800">MT 券码系统</h1>
+          <h1 className="text-2xl font-bold text-gray-800">WinsTechMT券码库管理系统</h1>
           <p className="text-gray-500 mt-2">美团账号券码管理系统</p>
         </div>
 
@@ -66,6 +88,19 @@ function LoginPage() {
               placeholder="请输入密码"
               required
             />
+          </div>
+
+          <div className="mb-6 flex items-center">
+            <input
+              type="checkbox"
+              id="rememberMe"
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+              className="w-4 h-4 text-orange-500 border-gray-300 rounded focus:ring-orange-500"
+            />
+            <label htmlFor="rememberMe" className="ml-2 text-sm text-gray-700 cursor-pointer">
+              记住账号
+            </label>
           </div>
 
           {error && (

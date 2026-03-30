@@ -39,13 +39,24 @@
   },
   "build": {
     "appId": "com.winstech.mtcoupon",
-    "productName": "MT Coupon System",
+    "productName": "WinsTechMT券码库管理系统",
     "directories": {
       "output": "dist-electron"
     },
     "files": [
       "dist/**/*",
-      "electron/**/*"
-    ]
+      "electron/**/*",
+      "win.ico"
+    ],
+    "win": {
+      "icon": "win.ico",
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "win.ico",
+      "uninstallerIcon": "win.ico"
+    }
   }
 }

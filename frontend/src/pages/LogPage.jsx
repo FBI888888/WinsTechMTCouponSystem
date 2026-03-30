@@ -80,15 +80,6 @@ function LogPage() {
 
   return (
     <div className="h-full flex flex-col p-6">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 bg-orange-100 rounded-xl flex items-center justify-center">
-          <svg className="w-5 h-5 text-orange-600" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 14H6v-2h6v2zm4-4H6v-2h10v2zm0-4H6V7h10v2z"/>
-          </svg>
-        </div>
-        <h1 className="text-xl font-bold text-gray-800">运行日志</h1>
-      </div>
-
       <div className="bg-white rounded-xl shadow-sm p-4 mb-4">
         <div className="flex gap-2 items-center">
           <button

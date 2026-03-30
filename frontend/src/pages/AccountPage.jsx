@@ -377,13 +377,6 @@ function AccountPage() {
 
   return (
     <div className="h-full flex flex-col p-6">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 bg-orange-100 rounded-xl flex items-center justify-center">
-          <Users className="w-5 h-5 text-orange-600" />
-        </div>
-        <h1 className="text-xl font-bold text-gray-800">美团账号管理</h1>
-      </div>
-
       {editOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="w-[720px] max-w-[90vw] bg-white rounded-xl shadow-lg overflow-hidden">
@@ -645,30 +638,59 @@ function AccountPage() {
                     {account.url}
                   </td>
                   <td className="px-4 py-3 text-sm">
-                    <span
-                      className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        account.status === 'normal'
-                          ? 'bg-green-100 text-green-800'
-                          : account.status === 'invalid'
-                            ? 'bg-red-100 text-red-800'
-                            : 'bg-gray-100 text-gray-800'
-                      }`}
-                    >
-                      {account.status === 'normal' ? '正常' : account.status === 'invalid' ? '失效' : '未检测'}
-                    </span>
+                    <div className="flex flex-col gap-1">
+                      <span
+                        className={`px-2 py-1 rounded-full text-xs font-medium ${
+                          account.status === 'normal'
+                            ? 'bg-green-100 text-green-800'
+                            : account.status === 'invalid'
+                              ? 'bg-red-100 text-red-800'
+                              : 'bg-gray-100 text-gray-800'
+                        }`}
+                      >
+                        {account.status === 'normal' ? '正常' : account.status === 'invalid' ? '失效' : '未检测'}
+                      </span>
+                      {account.disabled === 1 && (
+                        <span className="px-2 py-1 rounded-full text-xs font-medium bg-gray-200 text-gray-600">
+                          已禁用
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-sm">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        openScanDialog(account.id)
-                      }}
-                      disabled={scanningAccountId === account.id || account.status === 'invalid'}
-                      className="px-3 py-1 text-xs bg-purple-50 text-purple-600 rounded hover:bg-purple-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                      title="扫描此账号的订单和券码"
-                    >
-                      {scanningAccountId === account.id ? '扫描中...' : '扫描'}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          openScanDialog(account.id)
+                        }}
+                        disabled={scanningAccountId === account.id || account.status === 'invalid' || account.disabled === 1}
+                        className="px-3 py-1 text-xs bg-purple-50 text-purple-600 rounded hover:bg-purple-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="扫描此账号的订单和券码"
+                      >
+                        {scanningAccountId === account.id ? '扫描中...' : '扫描'}
+                      </button>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation()
+                          try {
+                            await accountsApi.toggleDisabled(account.id)
+                            await loadAccounts(true)
+                            showMessage('success', account.disabled === 1 ? '已启用账号' : '已禁用账号')
+                          } catch (error) {
+                            showMessage('error', '操作失败: ' + error.message)
+                          }
+                        }}
+                        className={`px-3 py-1 text-xs rounded ${
+                          account.disabled === 1
+                            ? 'bg-green-50 text-green-600 hover:bg-green-100'
+                            : 'bg-red-50 text-red-600 hover:bg-red-100'
+                        }`}
+                        title={account.disabled === 1 ? '启用此账号' : '禁用此账号'}
+                      >
+                        {account.disabled === 1 ? '启用' : '禁用'}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

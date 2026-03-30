@@ -325,4 +325,38 @@ async def scan_single_account(
         return {"success": False, "error": str(e)}
 
 
+@router.post("/{account_id}/toggle-disabled")
+async def toggle_account_disabled(
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    切换账号的禁用状态
+    """
+    account = db.query(MTAccount).filter(MTAccount.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+    # 切换禁用状态
+    account.disabled = 1 if account.disabled == 0 else 0
+    db.commit()
+    db.refresh(account)
+
+    # Log operation
+    log = OperationLog(
+        user_id=current_user.id,
+        action="toggle_account_disabled",
+        target_type="account",
+        target_id=account.id,
+        details=f"{'禁用' if account.disabled == 1 else '启用'}账号: {account.remark or account.userid}"
+    )
+    db.add(log)
+    db.commit()
+
+    # 返回时解密 Token
+    account.token = _decrypt_account_token(account.token)
+    return account
+
+
 from datetime import datetime

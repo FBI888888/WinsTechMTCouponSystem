@@ -35,9 +35,18 @@ function OrderListPage() {
   const [selectedAccountId, setSelectedAccountId] = useState('')
   const [statusFilter, setStatusFilter] = useState('2') // 默认待使用
   const [pageSize, setPageSize] = useState(ordersPageSize)
+  const [searchKeyword, setSearchKeyword] = useState('') // 搜索关键词
 
   const [syncProgress, setSyncProgress] = useState({ current: 0, total: 0, message: '' })
   const [queryProgress, setQueryProgress] = useState({ current: 0, total: 0, message: '' })
+
+  // 右键菜单状态
+  const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, order: null })
+  // 查询券码弹窗状态
+  const [couponQueryDialogOpen, setCouponQueryDialogOpen] = useState(false)
+  const [queryingOrder, setQueryingOrder] = useState(null)
+  const [couponQueryResult, setCouponQueryResult] = useState(null)
+  const [couponQueryLoading, setCouponQueryLoading] = useState(false)
 
   const queryRunIdRef = useRef(0)
   const syncRunIdRef = useRef(0)
@@ -69,6 +78,7 @@ function OrderListPage() {
       }
       if (selectedAccountId) params.account_id = selectedAccountId
       if (statusFilter && statusFilter !== '0') params.status_filter = parseInt(statusFilter)
+      if (searchKeyword.trim()) params.search = searchKeyword.trim()
 
       const response = await ordersApi.getAll(params)
       setOrders(
@@ -101,7 +111,7 @@ function OrderListPage() {
     if (selectedAccountId) {
       loadOrders(1, pageSize, true)
     }
-  }, [selectedAccountId, statusFilter])
+  }, [selectedAccountId, statusFilter, searchKeyword])
 
   // 分页控制
   const totalPages = Math.ceil(ordersTotal / ordersPageSize)
@@ -436,6 +446,73 @@ function OrderListPage() {
     setQueryProgress({ current: 0, total: 0, message: '' })
   }
 
+  // 右键菜单处理
+  const handleContextMenu = (e, order) => {
+    e.preventDefault()
+    setContextMenu({ visible: true, x: e.clientX, y: e.clientY, order })
+  }
+
+  const closeContextMenu = () => {
+    setContextMenu({ visible: false, x: 0, y: 0, order: null })
+  }
+
+  // 查询单个订单的券码
+  const handleQuerySingleCoupon = async () => {
+    if (!contextMenu.order) return
+
+    const order = contextMenu.order
+    closeContextMenu()
+
+    // 检查账号信息
+    const account = accounts.find(a => a.id === parseInt(selectedAccountId))
+    if (!account) {
+      toast.error('账号不存在')
+      return
+    }
+
+    if (!account.csecuuid || !account.open_id || !account.open_id_cipher) {
+      toast.warning('该账号缺少必要信息，请先在账号管理中重新抓取')
+      return
+    }
+
+    setQueryingOrder(order)
+    setCouponQueryDialogOpen(true)
+    setCouponQueryLoading(true)
+    setCouponQueryResult(null)
+
+    try {
+      const result = await window.electronAPI.rebateQueryOne({
+        account: {
+          userid: account.userid,
+          token: account.token,
+          csecuuid: account.csecuuid,
+          openId: account.open_id,
+          openIdCipher: account.open_id_cipher
+        },
+        orderId: order.order_view_id
+      })
+
+      if (result.success && result.data?.response) {
+        setCouponQueryResult(result.data.response)
+      } else {
+        toast.error('查询失败: ' + (result.error || '未知错误'))
+        setCouponQueryDialogOpen(false)
+      }
+    } catch (error) {
+      toast.error('查询失败: ' + error.message)
+      setCouponQueryDialogOpen(false)
+    } finally {
+      setCouponQueryLoading(false)
+    }
+  }
+
+  // 点击其他地方关闭右键菜单
+  useEffect(() => {
+    const handleClick = () => closeContextMenu()
+    document.addEventListener('click', handleClick)
+    return () => document.removeEventListener('click', handleClick)
+  }, [])
+
   const handleExport = async () => {
     const headers = ['订单号', '标题', '分类', '状态', '金额', '下单时间', '券码查询']
     const rows = orders.map(order => [
@@ -499,15 +576,6 @@ function OrderListPage() {
 
   return (
     <div className="h-full flex flex-col p-6">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 bg-orange-100 rounded-xl flex items-center justify-center">
-          <svg className="w-5 h-5 text-orange-600" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>
-          </svg>
-        </div>
-        <h1 className="text-xl font-bold text-gray-800">订单列表</h1>
-      </div>
-
       <div className="bg-white rounded-xl shadow-sm p-4 mb-4">
         <div className="flex gap-3 flex-wrap items-end">
           <div className="min-w-[200px]">
@@ -551,6 +619,17 @@ function OrderListPage() {
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
+          </div>
+
+          <div className="min-w-[200px]">
+            <label className="block text-xs text-gray-500 mb-1">搜索</label>
+            <input
+              type="text"
+              value={searchKeyword}
+              onChange={(e) => setSearchKeyword(e.target.value)}
+              placeholder="订单号/标题关键词"
+              className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            />
           </div>
 
           <div className="min-w-[100px]">
@@ -652,7 +731,11 @@ function OrderListPage() {
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {orders.map(order => (
-                <tr key={order.id} className="hover:bg-gray-50">
+                <tr
+                  key={order.id}
+                  className="hover:bg-gray-50 cursor-pointer"
+                  onContextMenu={(e) => handleContextMenu(e, order)}
+                >
                   <td className="px-4 py-3 text-sm text-gray-900 font-mono">{order.order_id}</td>
                   <td className="px-4 py-3 text-sm text-gray-500 truncate max-w-[200px]" title={order.title}>{order.title || '-'}</td>
                   <td className="px-4 py-3 text-sm text-gray-500">{order.catename || '-'}</td>
@@ -748,6 +831,92 @@ function OrderListPage() {
           </div>
         )}
       </div>
+
+      {/* 右键菜单 */}
+      {contextMenu.visible && (
+        <div
+          className="fixed bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <button
+            onClick={handleQuerySingleCoupon}
+            className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+          >
+            <Search className="w-4 h-4" />
+            查询券码
+          </button>
+        </div>
+      )}
+
+      {/* 查询券码弹窗 */}
+      {couponQueryDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-[600px] max-w-[90vw] max-h-[80vh] bg-white rounded-xl shadow-lg overflow-hidden flex flex-col">
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+              <div className="font-medium text-gray-800">
+                券码查询结果 - 订单 {queryingOrder?.order_id}
+              </div>
+              <button
+                onClick={() => setCouponQueryDialogOpen(false)}
+                className="text-sm text-gray-500 hover:text-gray-700"
+              >
+                关闭
+              </button>
+            </div>
+            <div className="p-5 overflow-auto flex-1">
+              {couponQueryLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500"></div>
+                  <span className="ml-3 text-gray-600">查询中...</span>
+                </div>
+              ) : couponQueryResult ? (
+                <div className="space-y-4">
+                  {Array.isArray(couponQueryResult.data) && couponQueryResult.data.length > 0 ? (
+                    couponQueryResult.data.map((coupon, index) => (
+                      <div key={index} className="bg-gray-50 rounded-lg p-4">
+                        <div className="grid grid-cols-2 gap-3 text-sm">
+                          <div>
+                            <span className="text-gray-500">券码：</span>
+                            <span className="font-mono font-medium">{coupon.couponCode || '-'}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">状态：</span>
+                            <span className="font-medium">{coupon.couponStatus || '-'}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">核销时间：</span>
+                            <span>{coupon.verifyTime || '-'}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">核销门店：</span>
+                            <span>{coupon.verifyPoiName || '-'}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">有效期：</span>
+                            <span>{coupon.validStartTime || '-'} 至 {coupon.validEndTime || '-'}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">券码类型：</span>
+                            <span>{coupon.couponType || '-'}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-center text-gray-500 py-8">
+                      未查询到券码信息
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-center text-gray-500 py-8">
+                  无查询结果
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -54,7 +54,8 @@ export const accountsApi = {
   delete: (id) => api.delete(`/api/accounts/${id}`),
   capture: (data) => api.post('/api/accounts/capture', data),
   checkStatus: (data) => api.post('/api/accounts/check', data),
-  scan: (id, statusFilter = 2) => api.post(`/api/accounts/${id}/scan?status_filter=${statusFilter}`)
+  scan: (id, statusFilter = 2) => api.post(`/api/accounts/${id}/scan?status_filter=${statusFilter}`),
+  toggleDisabled: (id) => api.post(`/api/accounts/${id}/toggle-disabled`)
 }
 
 // Orders API

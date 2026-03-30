@@ -26,12 +26,14 @@ class AccountUpdate(BaseModel):
     open_id: Optional[str] = None
     open_id_cipher: Optional[str] = None
     status: Optional[str] = None
+    disabled: Optional[int] = None
 
 
 class AccountResponse(AccountBase):
     id: int
     user_id: Optional[int]
     status: str
+    disabled: int = 0
     last_check_time: Optional[datetime]
     created_at: datetime
 

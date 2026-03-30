@@ -439,9 +439,10 @@ class ScheduledTaskService:
         MAX_CONSECUTIVE_WIND_CONTROL_ACCOUNTS = 3
 
         try:
-            # 1. 获取所有有效账号
+            # 1. 获取所有有效且未被禁用的账号
             accounts = db.query(MTAccount).filter(
-                MTAccount.status == AccountStatus.NORMAL
+                MTAccount.status == AccountStatus.NORMAL,
+                MTAccount.disabled == 0  # 只扫描未被禁用的账号
             ).all()
 
             logger.info(f"[定时任务] 开始扫描 {len(accounts)} 个账号")

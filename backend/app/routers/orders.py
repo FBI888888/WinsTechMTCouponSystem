@@ -48,6 +48,7 @@ def get_orders(
     status_filter: Optional[int] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    search: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -76,6 +77,13 @@ def get_orders(
         query = query.filter(Order.order_pay_time >= datetime.fromisoformat(start_date))
     if end_date:
         query = query.filter(Order.order_pay_time <= datetime.fromisoformat(end_date))
+
+    # 搜索功能：支持订单号和标题关键词搜索
+    if search:
+        search_pattern = f"%{search}%"
+        query = query.filter(
+            (Order.order_id.like(search_pattern)) | (Order.title.like(search_pattern))
+        )
 
     total = query.count()
     items = query.order_by(Order.order_pay_time.desc()).offset(skip).limit(limit).all()
