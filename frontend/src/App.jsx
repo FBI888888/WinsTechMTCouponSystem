@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from './stores/authStore'
 import LoginPage from './pages/LoginPage'
 import MainLayout from './components/Layout/MainLayout'
@@ -19,7 +19,7 @@ function PrivateRoute({ children }) {
 
 function App() {
   return (
-    <BrowserRouter>
+    <HashRouter>
       <Toast />
       <ConfirmDialog />
       <Routes>
@@ -42,7 +42,7 @@ function App() {
           <Route path="users" element={<UserPage />} />
         </Route>
       </Routes>
-    </BrowserRouter>
+    </HashRouter>
   )
 }
 

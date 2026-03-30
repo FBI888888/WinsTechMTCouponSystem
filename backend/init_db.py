@@ -13,6 +13,13 @@ from app.models.user import User
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+
+def get_password_hash(password: str) -> str:
+    # bcrypt 限制密码最大72字节，截断以防错误
+    password_bytes = password.encode('utf-8')[:72]
+    return pwd_context.hash(password_bytes)
+
+
 def create_default_admin():
     """创建默认管理员账户"""
     init_db()
@@ -28,7 +35,7 @@ def create_default_admin():
         # Create admin user
         admin = User(
             username="admin",
-            password_hash=pwd_context.hash("admin123"),
+            password_hash=get_password_hash("admin123"),
             role="admin",
             is_active=True
         )

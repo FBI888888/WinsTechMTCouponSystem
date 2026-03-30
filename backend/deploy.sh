@@ -1,11 +1,12 @@
 #!/bin/bash
 
 # MT Coupon System 快速部署脚本
-# 使用方法: bash deploy.sh
+# 使用方法: cd /www/wwwroot/winscoupons.winstech.top/backend && bash deploy.sh
 
 set -e
 
 PROJECT_DIR="/www/wwwroot/winscoupons.winstech.top"
+BACKEND_DIR="$PROJECT_DIR/backend"
 SERVICE_NAME="mtcoupon"
 
 echo "=========================================="
@@ -13,21 +14,20 @@ echo "  MT Coupon System 部署脚本"
 echo "=========================================="
 
 # 检查是否在项目目录
-if [ ! -d "$PROJECT_DIR" ]; then
-    echo "错误: 项目目录不存在: $PROJECT_DIR"
+if [ ! -d "$BACKEND_DIR" ]; then
+    echo "错误: 后端目录不存在: $BACKEND_DIR"
     exit 1
 fi
 
 cd "$PROJECT_DIR"
 
-# 更新后端
+# 拉取最新代码
 echo ""
-echo ">>> 1. 更新后端代码..."
-if [ -d ".git" ]; then
-    git pull
-else
-    echo "    (非Git项目，跳过代码拉取)"
-fi
+echo ">>> 1. 拉取最新代码..."
+git pull
+
+# 进入后端目录
+cd "$BACKEND_DIR"
 
 # 激活虚拟环境
 echo ""

@@ -66,6 +66,13 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
 
+  // 开发者工具快捷键 (Ctrl/Cmd + Shift + I)
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'I' && (input.control || input.meta) && input.shift) {
+      mainWindow.webContents.toggleDevTools()
+    }
+  })
+
   mainWindow.once('ready-to-show', () => {
     mainWindow.show()
     log('INFO', 'Main window shown')

@@ -1,11 +1,30 @@
 # WinsTech MT Coupon System 部署文档
 
-## 服务器信息
+## 项目信息
 
-| 服务 | 域名 | 说明 |
-|------|------|------|
-| 后端服务 | winscoupons.winstech.top | HTTP (无HTTPS) |
-| 数据库 | winssql.winstech.top | MySQL 3306 |
+| 项目 | 地址 |
+|------|------|
+| GitHub | https://github.com/FBI888888/WinsTechMTCouponSystem.git |
+| 后端API服务 | http://winscoupons.winstech.top |
+| 数据库 | winssql.winstech.top:3306 |
+
+## 系统架构
+
+```
+┌─────────────────┐         ┌──────────────────┐
+│  Electron桌面端  │ ──────> │   后端API服务    │
+│  (用户安装)      │  HTTP   │  (服务器部署)    │
+└─────────────────┘         └──────────────────┘
+                                    │
+                                    ▼
+                            ┌──────────────┐
+                            │   MySQL数据库 │
+                            └──────────────┘
+```
+
+- **后端**：部署到服务器，提供API接口
+- **前端**：打包为Electron桌面应用，分发给用户安装
+- **数据库**：MySQL数据库服务
 
 ---
 
@@ -17,34 +36,26 @@
 - Node.js 18+ (用于签名脚本)
 - MySQL 8.0+
 
-### 1.2 宝塔面板安装 Python
-
-```bash
-# 在宝塔软件商店安装 Python项目管理器 2.0
-
-# 或手动安装
-cd /www/server
-wget https://www.python.org/ftp/python/3.10.13/Python-3.10.13.tgz
-tar -xzf Python-3.10.13.tgz
-cd Python-3.10.13
-./configure --prefix=/www/server/python3
-make && make install
-```
-
-### 1.3 上传代码
+### 1.2 克隆代码
 
 ```bash
 # 创建项目目录
 mkdir -p /www/wwwroot/winscoupons.winstech.top
 cd /www/wwwroot/winscoupons.winstech.top
 
-# 上传 backend 文件夹内容到此目录
+# 克隆代码
+git clone https://github.com/FBI888888/WinsTechMTCouponSystem.git .
+
+cd WinsTechMTCouponSystem
+
+# 进入后端目录
+cd backend
 ```
 
-### 1.4 创建虚拟环境
+### 1.3 创建虚拟环境
 
 ```bash
-cd /www/wwwroot/winscoupons.winstech.top
+cd /www/wwwroot/winscoupons.winstech.top/backend
 
 # 创建虚拟环境
 python3 -m venv venv
@@ -56,7 +67,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 1.5 配置环境变量
+### 1.4 配置环境变量
 
 ```bash
 # 复制生产环境配置
@@ -78,29 +89,92 @@ SECRET_KEY=使用随机生成的密钥
 NODE_PATH=/www/server/nodejs/v20.10.0/bin/node
 ```
 
-### 1.6 初始化数据库
+### 1.5 初始化数据库
 
 ```bash
 # 激活虚拟环境
 source venv/bin/activate
 
-# 初始化数据库
+# 初始化数据库（创建表和默认管理员）
 python init_db.py
 ```
 
-### 1.7 配置 Gunicorn
+**重要：初始化完成后会创建默认管理员账户**
+- 用户名: `admin`
+- 密码: `admin123`
+- 请及时修改默认密码！
 
-创建 `gunicorn.conf.py`:
-```python
-# gunicorn.conf.py
-bind = "127.0.0.1:8000"
-workers = 4
-worker_class = "uvicorn.workers.UvicornWorker"
-timeout = 120
-keepalive = 5
+### 1.6 诊断排查（如有问题）
+
+如果登录失败或出现500错误，运行诊断脚本：
+
+```bash
+# 激活虚拟环境
+source venv/bin/activate
+
+# 运行诊断脚本
+python diagnose.py
 ```
 
-### 1.8 配置 Systemd 服务
+诊断脚本会检查：
+- 数据库连接是否正常
+- 数据表是否存在
+- 管理员用户是否存在
+- 登录流程是否正常
+
+**常见问题排查**：
+
+1. **数据库连接失败**
+   ```bash
+   # 检查数据库服务
+   systemctl status mysql
+
+   # 测试数据库连接
+   mysql -h winssql.winstech.top -u root -p
+   ```
+
+2. **表不存在**
+   ```bash
+   # 重新初始化数据库
+   python init_db.py
+   ```
+
+3. **管理员用户不存在**
+   ```bash
+   # 重新创建管理员
+   python init_db.py
+   ```
+
+### 1.6 宝塔面板部署后端
+
+#### 方式一：使用Python项目管理器（推荐）
+
+1. **安装Python项目管理器**
+   - 宝塔软件商店 → 搜索 "Python项目管理器" → 安装
+
+2. **创建项目**
+   - 点击 "Python项目管理器" → "添加项目"
+   - 项目名称: `mtcoupon`
+   - 项目路径: `/www/wwwroot/winscoupons.winstech.top/backend`
+   - Python版本: 3.10+
+   - 框架: `FastAPI`
+   - 启动方式: `gunicorn`
+   - 启动文件: `app.main:app`
+   - 端口: `8000`
+
+3. **配置环境变量**
+   - 项目设置 → 环境变量 → 添加：
+   ```
+   DB_HOST=winssql.winstech.top
+   DB_PASSWORD=你的数据库密码
+   SECRET_KEY=你的JWT密钥
+   NODE_PATH=/www/server/nodejs/v20.10.0/bin/node
+   ```
+
+4. **启动项目**
+   - 点击 "启动" 按钮
+
+#### 方式二：使用Systemd服务
 
 创建服务文件 `/etc/systemd/system/mtcoupon.service`:
 
@@ -113,9 +187,9 @@ After=network.target
 Type=notify
 User=www
 Group=www
-WorkingDirectory=/www/wwwroot/winscoupons.winstech.top
-Environment="PATH=/www/wwwroot/winscoupons.winstech.top/venv/bin"
-ExecStart=/www/wwwroot/winscoupons.winstech.top/venv/bin/gunicorn -c gunicorn.conf.py app.main:app
+WorkingDirectory=/www/wwwroot/winscoupons.winstech.top/backend
+Environment="PATH=/www/wwwroot/winscoupons.winstech.top/backend/venv/bin"
+ExecStart=/www/wwwroot/winscoupons.winstech.top/backend/venv/bin/gunicorn -c gunicorn.conf.py app.main:app
 Restart=always
 RestartSec=3
 
@@ -131,78 +205,113 @@ systemctl enable mtcoupon
 systemctl status mtcoupon
 ```
 
-### 1.9 配置 Nginx 反向代理
+### 1.7 开放API端口
 
-在宝塔面板创建网站 `winscoupons.winstech.top`，然后修改 Nginx 配置：
+后端API运行在8000端口，需要确保外网可以访问：
 
-```nginx
-server {
-    listen 80;
-    server_name winscoupons.winstech.top;
+#### 方式一：直接开放端口（简单）
 
-    # 后端API代理
-    location /api {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
-        proxy_read_timeout 300s;
-        proxy_connect_timeout 75s;
-    }
+在宝塔面板：
+1. 安全 → 防火墙
+2. 添加规则：端口 `8000`，备注 `MT Coupon API`
+3. 如果使用云服务器，还需在云服务商控制台开放8000端口
 
-    # 前端静态文件
-    location / {
-        root /www/wwwroot/winscoupons.winstech.top/frontend;
-        index index.html;
-        try_files $uri $uri/ /index.html;
-    }
+#### 方式二：Nginx反向代理（推荐）
 
-    # 访问日志
-    access_log /www/wwwlogs/winscoupons.access.log;
-    error_log /www/wwwlogs/winscoupons.error.log;
-}
+在宝塔面板创建网站并配置反向代理：
+
+1. **创建网站**
+   - 网站 → 添加站点
+   - 域名: `winscoupons.winstech.top`
+   - 根目录: 任意（不会用到）
+   - PHP版本: 纯静态
+
+2. **配置反向代理**
+   - 网站设置 → 反向代理 → 添加反向代理
+   - 代理名称: `api`
+   - 目标URL: `http://127.0.0.1:8000`
+   - 发送域名: `$host`
+
+这样前端访问 `http://winscoupons.winstech.top/api/*` 会转发到后端API。
+
+### 1.8 验证后端部署
+
+部署完成后，验证后端API是否正常：
+
+```bash
+# 检查服务状态
+curl http://127.0.0.1:8000/api/auth/me
+
+# 或在浏览器访问
+# http://winscoupons.winstech.top/api/auth/me
 ```
+
+如果返回 `{"detail":"Not authenticated"}` 表示API服务正常运行。
 
 ---
 
-## 二、前端部署
+## 二、Electron桌面应用打包
 
-### 2.1 本地构建
+前端是Electron桌面应用，打包为安装包分发给用户。
+
+### 2.1 环境准备
+
+确保本地开发环境已安装：
+- Node.js 18+
+- npm 或 yarn
+
+### 2.2 配置API地址
+
+编辑 `frontend/.env.production`：
+
+```ini
+# 生产环境API地址
+VITE_API_BASE_URL=http://winscoupons.winstech.top
+```
+
+### 2.3 打包命令
 
 ```bash
-# 进入前端目录
-cd frontend
+# 克隆代码到本地
+git clone https://github.com/FBI888888/WinsTechMTCouponSystem.git
+cd WinsTechMTCouponSystem/frontend
 
 # 安装依赖
 npm install
 
-# 构建生产版本
-npm run build
+# 打包Electron应用（Windows）
+npm run electron:build
+
+# 打包完成后，安装包位于：
+# Windows: dist-electron/MT Coupon System Setup 1.0.0.exe
+# macOS: dist-electron/MT Coupon System-1.0.0.dmg
+# Linux: dist-electron/MT Coupon System-1.0.0.AppImage
 ```
 
-### 2.2 上传构建产物
+### 2.4 分发方式
 
-将 `frontend/dist` 目录下的所有文件上传到服务器：
+打包完成后，将安装包上传到文件服务器或通过以下方式分发：
+
+1. **直接分发**：将安装包发送给用户
+2. **网盘下载**：上传到百度网盘、阿里云盘等
+3. **自有服务器**：上传到服务器提供下载链接
+
+### 2.5 用户安装
+
+用户下载安装包后：
+- **Windows**：双击 `.exe` 安装包，按提示安装
+- **macOS**：双击 `.dmg` 文件，拖拽到 Applications
+- **Linux**：双击 `.AppImage` 文件运行，或安装 `.deb`/`.rpm` 包
+
+### 2.6 开发测试
 
 ```bash
-# 在服务器上创建前端目录
-mkdir -p /www/wwwroot/winscoupons.winstech.top/frontend
+# 开发模式运行
+npm run electron:dev
 
-# 上传 dist/* 到该目录
-```
-
-### 2.3 前端配置说明
-
-前端通过 `.env.production` 配置API地址：
-
-```ini
-# frontend/.env.production
-VITE_API_BASE_URL=http://winscoupons.winstech.top
+# 或先启动Vite，再启动Electron
+npm run dev
+npm run electron:start
 ```
 
 ---
@@ -211,6 +320,7 @@ VITE_API_BASE_URL=http://winscoupons.winstech.top
 
 ### 3.1 后端更新
 
+#### 使用Python项目管理器
 ```bash
 # SSH 登录服务器
 ssh root@winscoupons.winstech.top
@@ -218,10 +328,35 @@ ssh root@winscoupons.winstech.top
 # 进入项目目录
 cd /www/wwwroot/winscoupons.winstech.top
 
-# 拉取最新代码（如果使用Git）
+# 拉取最新代码
 git pull
 
-# 或上传新的代码文件
+# 进入后端目录
+cd backend
+
+# 激活虚拟环境
+source venv/bin/activate
+
+# 更新依赖（如有新增）
+pip install -r requirements.txt
+
+# 在宝塔面板中：
+# Python项目管理器 → mtcoupon → 重启
+```
+
+#### 使用Systemd服务
+```bash
+# SSH 登录服务器
+ssh root@winscoupons.winstech.top
+
+# 进入项目目录
+cd /www/wwwroot/winscoupons.winstech.top
+
+# 拉取最新代码
+git pull
+
+# 进入后端目录
+cd backend
 
 # 激活虚拟环境
 source venv/bin/activate
@@ -236,44 +371,56 @@ systemctl restart mtcoupon
 journalctl -u mtcoupon -f
 ```
 
-### 3.2 前端更新
+### 3.2 Electron应用更新
+
+当有新版本发布时：
 
 ```bash
-# 本地构建
+# 本地拉取最新代码
+git pull
+
+# 进入前端目录
 cd frontend
-npm run build
 
-# 上传 dist/* 到服务器
-# /www/wwwroot/winscoupons.winstech.top/frontend/
+# 安装新依赖（如有）
+npm install
 
-# 清除浏览器缓存后刷新即可
+# 重新打包
+npm run electron:build
+
+# 将新的安装包分发给用户
+# dist-electron/MT Coupon System Setup 1.0.0.exe
 ```
 
-### 3.3 一键更新脚本
+用户需要：
+1. 下载新版本安装包
+2. 卸载旧版本（可选，部分情况可覆盖安装）
+3. 安装新版本
 
-创建 `/www/wwwroot/winscoupons.winstech.top/update.sh`:
+### 3.3 版本号管理
+
+修改 `frontend/package.json` 中的版本号：
+
+```json
+{
+  "name": "mt-coupon-frontend",
+  "version": "1.0.1",  // 更新版本号
+  ...
+}
+```
+
+打包后的安装包会自动带上版本号：`MT Coupon System Setup 1.0.1.exe`
+
+### 3.4 一键更新脚本
+
+使用项目提供的部署脚本（适用于Systemd方式）：
 
 ```bash
-#!/bin/bash
-
-echo "=== 更新 MT Coupon System ==="
-
-cd /www/wwwroot/winscoupons.winstech.top
-
-# 更新后端
-echo ">>> 更新后端..."
-source venv/bin/activate
-pip install -r requirements.txt -q
-systemctl restart mtcoupon
-
-echo ">>> 后端更新完成"
-
-# 检查服务状态
-sleep 3
-systemctl status mtcoupon --no-pager
-
-echo "=== 更新完成 ==="
+cd /www/wwwroot/winscoupons.winstech.top/backend
+bash deploy.sh
 ```
+
+> **提示**：如果使用宝塔Python项目管理器，直接在面板中点击"重启"按钮即可。
 
 ---
 
@@ -322,6 +469,45 @@ which node
 # 更新 .env 中的 NODE_PATH
 ```
 
+### 4.6 Electron应用无法连接后端
+
+检查以下项目：
+
+1. **检查后端API是否正常**
+   ```bash
+   curl http://winscoupons.winstech.top/api/auth/me
+   ```
+
+2. **检查防火墙是否开放端口**
+   - 宝塔面板 → 安全 → 确保8000端口已开放
+   - 云服务器控制台 → 安全组 → 开放8000端口
+
+3. **检查前端配置**
+   - 确认 `frontend/.env.production` 中的API地址正确
+   - 重新打包应用
+
+### 4.7 Electron打包失败
+
+常见原因：
+
+1. **网络问题**：下载Electron二进制文件失败
+   ```bash
+   # 设置国内镜像
+   npm config set electron_mirror https://npmmirror.com/mirrors/electron/
+   npm run electron:build
+   ```
+
+2. **依赖问题**
+   ```bash
+   # 清除依赖重新安装
+   rm -rf node_modules
+   npm install
+   ```
+
+3. **Windows打包需要管理员权限**
+   - 右键以管理员身份运行PowerShell
+   - 再执行打包命令
+
 ---
 
 ## 五、数据库配置
@@ -352,17 +538,26 @@ FLUSH PRIVILEGES;
 ## 六、目录结构
 
 ```
-/www/wwwroot/winscoupons.winstech.top/
-├── app/                    # 后端应用
-├── venv/                   # Python虚拟环境
-├── frontend/               # 前端静态文件
-│   ├── index.html
-│   ├── assets/
-│   └── ...
-├── .env                    # 环境配置
-├── requirements.txt        # Python依赖
-├── gunicorn.conf.py        # Gunicorn配置
-└── update.sh               # 更新脚本
+WinsTechMTCouponSystem/
+├── .git/                      # Git仓库
+├── backend/                   # 后端应用（部署到服务器）
+│   ├── app/                   # 应用代码
+│   ├── venv/                  # Python虚拟环境（服务器上）
+│   ├── .env                   # 环境配置（服务器上）
+│   ├── .env.production        # 生产环境配置模板
+│   ├── requirements.txt       # Python依赖
+│   ├── gunicorn.conf.py       # Gunicorn配置
+│   ├── deploy.sh              # 部署脚本
+│   └── init_db.py             # 数据库初始化
+├── frontend/                  # 前端Electron应用（本地打包）
+│   ├── electron/              # Electron主进程
+│   ├── src/                   # React源码
+│   ├── dist/                  # Vite构建产物
+│   ├── dist-electron/         # Electron打包输出
+│   ├── .env.development       # 开发环境配置
+│   └── .env.production       # 生产环境配置
+├── DEPLOY.md                  # 部署文档
+└── README.md                  # 项目说明
 ```
 
 ---
