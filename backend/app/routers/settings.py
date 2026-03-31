@@ -7,6 +7,7 @@ from app.database import get_db
 from app.models.user import User
 from app.models.config import SystemConfig
 from app.deps import get_current_admin_user
+from app.services.notification import WechatNotifier
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -128,3 +129,61 @@ async def trigger_scan_manually(
         "message": "Scan task completed",
         "result": result
     }
+
+
+class WechatTestRequest(BaseModel):
+    message: Optional[str] = "这是一条测试消息"
+
+
+@router.get("/wechat/config")
+def get_wechat_config(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """获取微信通知配置"""
+    from app.services.notification import (
+        CONFIG_WECHAT_FROM_WXID,
+        CONFIG_WECHAT_TO_WXID,
+        CONFIG_WECHAT_ENABLED
+    )
+
+    configs = db.query(SystemConfig).filter(
+        SystemConfig.category == "notification"
+    ).all()
+
+    result = {}
+    for config in configs:
+        result[config.config_key] = {
+            "value": config.config_value,
+            "description": config.description
+        }
+
+    return result
+
+
+@router.post("/wechat/test")
+async def test_wechat_notification(
+    request: WechatTestRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """测试微信消息通知"""
+    notifier = WechatNotifier(db)
+
+    content = (
+        f"🧪 美团券码系统 - 测试消息\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"{request.message}\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"发送时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+    success = await notifier.send_message(content)
+
+    if success:
+        return {"message": "测试消息发送成功"}
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="测试消息发送失败，请检查微信配置"
+        )

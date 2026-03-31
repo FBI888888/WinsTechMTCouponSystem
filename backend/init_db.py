@@ -1,5 +1,5 @@
 """
-数据库初始化脚本 - 创建默认管理员用户
+数据库初始化脚本 - 创建默认管理员用户和系统配置
 """
 import sys
 import os
@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from passlib.context import CryptContext
 from app.database import SessionLocal, init_db
 from app.models.user import User
+from app.models.config import SystemConfig
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -53,5 +54,53 @@ def create_default_admin():
         db.close()
 
 
+def init_wechat_configs():
+    """初始化微信通知相关配置"""
+    db = SessionLocal()
+    try:
+        configs = [
+            {
+                "config_key": "wechat_from_wxid",
+                "config_value": "",
+                "config_type": "string",
+                "category": "notification",
+                "description": "微信消息发送者ID (from_wxid)"
+            },
+            {
+                "config_key": "wechat_to_wxid",
+                "config_value": "",
+                "config_type": "string",
+                "category": "notification",
+                "description": "微信消息接收者ID (to_wxid)"
+            },
+            {
+                "config_key": "wechat_notification_enabled",
+                "config_value": "false",
+                "config_type": "boolean",
+                "category": "notification",
+                "description": "是否启用微信消息通知"
+            }
+        ]
+
+        for config_data in configs:
+            existing = db.query(SystemConfig).filter(
+                SystemConfig.config_key == config_data["config_key"]
+            ).first()
+            if not existing:
+                config = SystemConfig(**config_data)
+                db.add(config)
+                print(f"创建配置: {config_data['config_key']}")
+
+        db.commit()
+        print("微信通知配置初始化完成!")
+
+    except Exception as e:
+        print(f"初始化微信配置失败: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
     create_default_admin()
+    init_wechat_configs()

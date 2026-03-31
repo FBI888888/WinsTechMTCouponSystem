@@ -21,6 +21,7 @@ from app.models.log import ScheduledTaskLog
 from app.models.config import SystemConfig
 from app.config import settings
 from app.utils.encryption import decrypt_token
+from app.services.notification import send_wechat_notification
 
 logger = logging.getLogger(__name__)
 
@@ -338,6 +339,17 @@ class ScheduledTaskService:
                 db.commit()
                 logger.warning(f"[扫描] 账号 {account.userid} Token已失效")
 
+                # 发送微信通知 - 账号失效
+                try:
+                    await send_wechat_notification(
+                        db,
+                        "invalid",
+                        remark=account.remark or "未设置",
+                        userid=account.userid
+                    )
+                except Exception as notify_error:
+                    logger.error(f"[扫描] 发送账号失效通知失败: {notify_error}")
+
                 # 更新任务日志
                 task_log.status = "success"
                 task_log.accounts_scanned = 0
@@ -356,6 +368,17 @@ class ScheduledTaskService:
             if is_wind_control:
                 stats["is_wind_control"] = True
                 logger.warning(f"[扫描] 账号 {account.userid} 获取订单遇到风控，跳过该账号")
+
+                # 发送微信通知 - 账号风控
+                try:
+                    await send_wechat_notification(
+                        db,
+                        "wind_control",
+                        remark=account.remark or "未设置",
+                        userid=account.userid
+                    )
+                except Exception as notify_error:
+                    logger.error(f"[扫描] 发送账号风控通知失败: {notify_error}")
                 # 更新任务日志
                 task_log.status = "success"
                 task_log.accounts_scanned = 1
@@ -478,6 +501,17 @@ class ScheduledTaskService:
                         f"[定时任务] 连续{MAX_CONSECUTIVE_WIND_CONTROL_ACCOUNTS}个账号遇到风控，停止扫描任务"
                     )
                     stats["stopped_by_wind_control"] = True
+
+                    # 发送微信通知 - 批量风控停止
+                    try:
+                        await send_wechat_notification(
+                            db,
+                            "batch_wind_control",
+                            count=MAX_CONSECUTIVE_WIND_CONTROL_ACCOUNTS
+                        )
+                    except Exception as notify_error:
+                        logger.error(f"[定时任务] 发送批量风控通知失败: {notify_error}")
+
                     break
 
                 try:
@@ -490,6 +524,18 @@ class ScheduledTaskService:
                         db.commit()
                         stats["accounts_invalid"] += 1
                         consecutive_wind_control_accounts = 0  # 非风控失败重置计数
+
+                        # 发送微信通知 - 账号失效
+                        try:
+                            await send_wechat_notification(
+                                db,
+                                "invalid",
+                                remark=account.remark or "未设置",
+                                userid=account.userid
+                            )
+                        except Exception as notify_error:
+                            logger.error(f"[定时任务] 发送账号失效通知失败: {notify_error}")
+
                         continue
 
                     stats["accounts_scanned"] += 1
@@ -502,6 +548,18 @@ class ScheduledTaskService:
                             f"[定时任务] 账号 {account.userid} 获取订单遇到风控 "
                             f"(连续{consecutive_wind_control_accounts}个账号风控)"
                         )
+
+                        # 发送微信通知 - 账号风控
+                        try:
+                            await send_wechat_notification(
+                                db,
+                                "wind_control",
+                                remark=account.remark or "未设置",
+                                userid=account.userid
+                            )
+                        except Exception as notify_error:
+                            logger.error(f"[定时任务] 发送账号风控通知失败: {notify_error}")
+
                         continue
 
                     # 获取订单成功，重置风控计数
