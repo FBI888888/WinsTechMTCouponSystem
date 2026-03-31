@@ -1,4 +1,5 @@
 from typing import List, Optional
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 import httpx
@@ -124,7 +125,6 @@ def capture_account(
         existing.open_id_cipher = request.open_id_cipher or existing.open_id_cipher
         if request.status:
             existing.status = parse_status(request.status)
-            from datetime import datetime
             existing.last_check_time = datetime.now()
         db.commit()
         db.refresh(existing)
@@ -144,7 +144,6 @@ def capture_account(
         status=parse_status(request.status) if request.status else AccountStatus.UNCHECKED
     )
     if request.status:
-        from datetime import datetime
         db_account.last_check_time = datetime.now()
     db.add(db_account)
     db.commit()
@@ -164,6 +163,38 @@ def capture_account(
     # 返回时解密
     db_account.token = _decrypt_account_token(db_account.token)
     return db_account
+
+
+@router.get("/random-gift-id")
+def get_random_gift_id(
+    account_id: int = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    获取礼物号（用于风控检测）
+    如果指定account_id，则获取该账号的礼物号
+    否则获取任意一个礼物号
+    礼物订单特征：is_gift=True 或 order_view_id 长度大于20
+    """
+    from app.models.order import Order
+    from sqlalchemy import func
+
+    query = db.query(Order).filter(
+        Order.order_view_id.isnot(None),
+        Order.order_view_id != '',
+        (Order.is_gift == True) | (func.length(Order.order_view_id) > 20)
+    )
+
+    # 如果指定了account_id，筛选该账号的订单
+    if account_id:
+        query = query.filter(Order.account_id == account_id)
+
+    order = query.first()
+
+    if order and order.order_view_id:
+        return {"gift_id": order.order_view_id}
+    return {"gift_id": None}
 
 
 @router.get("/{account_id}", response_model=AccountResponse)
@@ -372,5 +403,3 @@ async def toggle_account_disabled(
     account.token = _decrypt_account_token(account.token)
     return account
 
-
-from datetime import datetime

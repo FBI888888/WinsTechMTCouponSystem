@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { Users, Plus, Trash2, Download, Upload, Search, RefreshCw, Radio, ShieldOff } from 'lucide-react'
+import { Plus, Trash2, Download, Upload, Search, RefreshCw, Radio, ShieldOff } from 'lucide-react'
 import { accountsApi } from '../api'
 import { useDataStore } from '../stores/dataStore'
 import { useToastStore } from '../stores/toastStore'
@@ -7,7 +7,7 @@ import { confirm } from '../stores/confirmStore'
 
 function AccountPage() {
   // 全局缓存
-  const { accounts, accountsLoaded, setAccounts, fetchAccounts } = useDataStore()
+  const { accounts, setAccounts, fetchAccounts } = useDataStore()
   const toast = useToastStore()
 
   const [remark, setRemark] = useState('')
@@ -32,6 +32,7 @@ function AccountPage() {
   const [resettingCerts, setResettingCerts] = useState(false)
   const [scanningAccountId, setScanningAccountId] = useState(null)
   const [checkingAccountId, setCheckingAccountId] = useState(null)  // 正在检查的账号ID
+  const [riskCheckingAccountId, setRiskCheckingAccountId] = useState(null)  // 正在风控检测的账号ID
 
   // 扫描对话框状态
   const [scanDialogOpen, setScanDialogOpen] = useState(false)
@@ -477,6 +478,66 @@ function AccountPage() {
     }
   }
 
+  // 风控检测
+  const handleRiskControlCheck = async (account) => {
+    setRiskCheckingAccountId(account.id)
+
+    try {
+      // 1. 获取该账号的礼物号
+      const giftIdResult = await accountsApi.getRandomGiftId(account.id)
+      const giftId = giftIdResult.data?.gift_id
+
+      if (!giftId) {
+        showMessage('error', '数据库中没有礼物号，请先同步订单')
+        setRiskCheckingAccountId(null)
+        return
+      }
+
+      // 2. 调用前端美团API进行风控检测
+      const result = await window.electronAPI.checkRiskControl({
+        token: account.token,
+        giftId: giftId,
+        userId: account.userid,
+        openId: account.open_id,
+        uuid: account.csecuuid
+      })
+
+      if (result.success && result.data) {
+        const coupons = result.data.coupons || []
+        const rawData = result.data.rawData
+
+        // 首先检查是否有风控响应 (yodaCode 406 或有 generalPageUrl)
+        if (rawData?.yodaCode === 406 || rawData?.customData?.generalPageUrl) {
+          const riskUrl = rawData?.customData?.generalPageUrl
+          if (riskUrl) {
+            window.open(riskUrl, '_blank')
+            showMessage('warning', '触发风控，已打开验证页面')
+          } else {
+            showMessage('error', '账号已黑，请自行解黑')
+          }
+        } else if (rawData?.msg?.includes('网络') || rawData?.msg?.includes('不太给力')) {
+          const riskUrl = rawData?.customData?.generalPageUrl
+          if (riskUrl) {
+            window.open(riskUrl, '_blank')
+            showMessage('warning', '触发风控，已打开验证页面')
+          } else {
+            showMessage('error', '账号已黑，请自行解黑')
+          }
+        } else if (coupons.length > 0) {
+          showMessage('success', '账号正常，未触发风控')
+        } else {
+          showMessage('error', '账号已黑，请自行解黑')
+        }
+      } else {
+        showMessage('error', '风控检测请求失败')
+      }
+    } catch (error) {
+      showMessage('error', '风控检测失败: ' + error.message)
+    } finally {
+      setRiskCheckingAccountId(null)
+    }
+  }
+
   return (
     <div className="h-full flex flex-col p-6">
       {editOpen && (
@@ -740,9 +801,9 @@ function AccountPage() {
                     {account.url}
                   </td>
                   <td className="px-4 py-3 text-sm">
-                    <div className="flex flex-col gap-1">
+                    <div className="flex flex-col gap-1 items-start">
                       <span
-                        className={`px-2 py-1 rounded-full text-xs font-medium ${
+                        className={`px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${
                           account.status === 'normal'
                             ? 'bg-green-100 text-green-800'
                             : account.status === 'invalid'
@@ -753,7 +814,7 @@ function AccountPage() {
                         {account.status === 'normal' ? '正常' : account.status === 'invalid' ? '失效' : '未检测'}
                       </span>
                       {account.disabled === 1 && (
-                        <span className="px-2 py-1 rounded-full text-xs font-medium bg-gray-200 text-gray-600">
+                        <span className="px-2 py-0.5 rounded text-xs font-medium bg-gray-200 text-gray-600 whitespace-nowrap">
                           已禁用
                         </span>
                       )}
@@ -802,6 +863,24 @@ function AccountPage() {
                         title={account.disabled === 1 ? '启用此账号' : '禁用此账号'}
                       >
                         {account.disabled === 1 ? '启用' : '禁用'}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleRiskControlCheck(account)
+                        }}
+                        disabled={riskCheckingAccountId === account.id}
+                        className="px-2 py-1 text-xs bg-amber-50 text-amber-600 rounded hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed leading-tight"
+                        title="检测账号是否触发风控"
+                      >
+                        {riskCheckingAccountId === account.id ? (
+                          <span>检测中...</span>
+                        ) : (
+                          <span className="flex justify-center gap-0.5">
+                            <span>风<br/>控</span>
+                            <span>检<br/>测</span>
+                          </span>
+                        )}
                       </button>
                     </div>
                   </td>

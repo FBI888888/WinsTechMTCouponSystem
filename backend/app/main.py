@@ -12,9 +12,14 @@ from sqlalchemy import text
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+# 设置时区为东八区（北京时间）
+os.environ['TZ'] = 'Asia/Shanghai'
+if hasattr(time, 'tzset'):
+    time.tzset()
+
 from app.config import settings
 from app.database import init_db, SessionLocal, get_db, engine
-from app.routers import auth, accounts, users, orders, coupons, logs, settings as settings_router
+from app.routers import auth, accounts, users, orders, coupons, logs, settings as settings_router, stats
 
 # 跨平台文件锁支持
 try:
@@ -243,6 +248,7 @@ app.include_router(orders.router)
 app.include_router(coupons.router)
 app.include_router(logs.router)
 app.include_router(settings_router.router)
+app.include_router(stats.router)
 
 
 @app.get("/")

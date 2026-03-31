@@ -14,7 +14,7 @@ const vm = require('vm')
 // ====== 你自己填写 ======
 const TOKEN = 'AgE8IxcqrfOqfKicX8NxGw-j6VHPYuEzd9-MWkfsOdWWxL4xddhm6EXxARQBq8cNMJtskfH7PQDk3gAAAAAnMwAAmu7y_L1n42FHlWLRp9lcRHfzMXeOd00ofIlne_gbioOiG05Cv_IAaVCgDeUye8C_'
 const USERID = '4360236367'
-const GIFT_ID = '20078597718041774871896'
+const GIFT_ID = '19854399936561773906657'
 // ======================
 
 // 加载 H5guard.js 签名服务

@@ -927,8 +927,8 @@ class MeituanAPI {
           continue
         }
 
-        // 返回结果，附带提取到的店铺位置（供调用方缓存复用）
-        return { coupons: result, shopLocation: extractedShopLocation }
+        // 返回结果，附带提取到的店铺位置和原始响应数据（供调用方缓存复用和风控检测）
+        return { coupons: result, shopLocation: extractedShopLocation, rawData: response.data }
       } catch (error) {
         console.error(`获取礼物券码列表失败(尝试${retry + 1}):`, error.message, error.response?.status)
         lastError = error

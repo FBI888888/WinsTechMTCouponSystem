@@ -55,7 +55,8 @@ export const accountsApi = {
   capture: (data) => api.post('/api/accounts/capture', data),
   checkStatus: (data) => api.post('/api/accounts/check', data),
   scan: (id, statusFilter = 2) => api.post(`/api/accounts/${id}/scan?status_filter=${statusFilter}`),
-  toggleDisabled: (id) => api.post(`/api/accounts/${id}/toggle-disabled`)
+  toggleDisabled: (id) => api.post(`/api/accounts/${id}/toggle-disabled`),
+  getRandomGiftId: (accountId) => api.get('/api/accounts/random-gift-id', { params: { account_id: accountId } })
 }
 
 // Orders API
@@ -109,6 +110,11 @@ export const settingsApi = {
   set: (key, data) => api.put(`/api/settings/${key}`, data),
   create: (data) => api.post('/api/settings', data),
   delete: (key) => api.delete(`/api/settings/${key}`)
+}
+
+// Stats API
+export const statsApi = {
+  getDashboard: () => api.get('/api/stats/dashboard')
 }
 
 export default api

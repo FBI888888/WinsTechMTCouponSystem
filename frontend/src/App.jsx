@@ -2,6 +2,7 @@ import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from './stores/authStore'
 import LoginPage from './pages/LoginPage'
 import MainLayout from './components/Layout/MainLayout'
+import DashboardPage from './pages/DashboardPage'
 import AccountPage from './pages/AccountPage'
 import OrderListPage from './pages/OrderListPage'
 import CouponQueryPage from './pages/CouponQueryPage'
@@ -32,7 +33,8 @@ function App() {
             </PrivateRoute>
           }
         >
-          <Route index element={<Navigate to="/accounts" />} />
+          <Route index element={<Navigate to="/dashboard" />} />
+          <Route path="dashboard" element={<DashboardPage />} />
           <Route path="accounts" element={<AccountPage />} />
           <Route path="orders" element={<OrderListPage />} />
           <Route path="coupons" element={<CouponQueryPage />} />

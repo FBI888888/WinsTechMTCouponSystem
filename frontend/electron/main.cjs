@@ -336,3 +336,23 @@ ipcMain.handle('reset-certs', async () => {
   }
   return { success: false, error: 'Proxy not initialized' }
 })
+
+// 风控检测
+ipcMain.handle('check-risk-control', async (event, { token, giftId, userId, openId, uuid }) => {
+  try {
+    const MeituanAPI = require('./services/meituanAPI.cjs')
+
+    log('INFO', `风控检测 - giftId: ${giftId}, userId: ${userId}`)
+
+    const result = await MeituanAPI.getGiftCouponList(token, giftId, {
+      userId: userId || '',
+      openId: openId || '',
+      uuid: uuid || ''
+    })
+
+    return { success: true, data: result }
+  } catch (error) {
+    log('ERROR', `风控检测失败: ${error.message}`)
+    return { success: false, error: error.message }
+  }
+})

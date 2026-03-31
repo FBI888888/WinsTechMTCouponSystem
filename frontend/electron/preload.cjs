@@ -37,5 +37,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
 
   // App version
-  getVersion: () => ipcRenderer.invoke('get-version')
+  getVersion: () => ipcRenderer.invoke('get-version'),
+
+  // 风控检测
+  checkRiskControl: (params) => ipcRenderer.invoke('check-risk-control', params)
 })
