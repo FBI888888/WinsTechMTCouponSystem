@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { logsApi } from '../api'
 import { useDataStore } from '../stores/dataStore'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Eye, X } from 'lucide-react'
 
 function LogPage() {
   // 全局缓存
@@ -14,6 +14,12 @@ function LogPage() {
   const [activeTab, setActiveTab] = useState(logsTab || 'operations')
   const [currentPage, setCurrentPage] = useState(logsPage || 1)
   const [pageSize] = useState(20)  // 减少每页条数，提升性能
+  
+  // 详情弹窗状态
+  const [showDetailModal, setShowDetailModal] = useState(false)
+  const [selectedTask, setSelectedTask] = useState(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [scanDetails, setScanDetails] = useState([])
 
   const loadLogs = useCallback(async (forceRefresh = false) => {
     // 如果已加载且不强制刷新且tab没变且页码没变，直接返回
@@ -76,6 +82,30 @@ function LogPage() {
       case 'running': return '运行中'
       default: return status
     }
+  }
+
+  // 查看任务详情
+  const handleViewDetail = async (taskId) => {
+    setDetailLoading(true)
+    setShowDetailModal(true)
+    try {
+      const response = await logsApi.getScheduledTaskDetail(taskId)
+      if (response.data.success) {
+        setSelectedTask(response.data.data)
+        setScanDetails(response.data.data.scan_details || [])
+      }
+    } catch (error) {
+      console.error('Failed to load task detail:', error)
+    } finally {
+      setDetailLoading(false)
+    }
+  }
+
+  // 关闭详情弹窗
+  const handleCloseDetail = () => {
+    setShowDetailModal(false)
+    setSelectedTask(null)
+    setScanDetails([])
   }
 
   return (
@@ -141,6 +171,7 @@ function LogPage() {
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">查询券码</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">耗时</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">错误信息</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
                   </>
                 )}
               </tr>
@@ -184,13 +215,23 @@ function LogPage() {
                       <td className="px-4 py-3 text-sm text-gray-500">{log.coupons_queried || 0}</td>
                       <td className="px-4 py-3 text-sm text-gray-500">{log.duration_seconds ? `${log.duration_seconds}秒` : '-'}</td>
                       <td className="px-4 py-3 text-sm text-gray-500 max-w-[200px] truncate" title={log.error_message}>{log.error_message || '-'}</td>
+                      <td className="px-4 py-3 text-sm">
+                        <button
+                          onClick={() => handleViewDetail(log.id)}
+                          className="text-blue-500 hover:text-blue-700 flex items-center gap-1"
+                          title="查看详情"
+                        >
+                          <Eye className="w-4 h-4" />
+                          详情
+                        </button>
+                      </td>
                     </>
                   )}
                 </tr>
               ))}
               {logs.length === 0 && (
                 <tr>
-                  <td colSpan={activeTab === 'scheduled' ? 8 : 5} className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan={activeTab === 'scheduled' ? 9 : 5} className="px-4 py-8 text-center text-gray-500">
                     暂无日志
                   </td>
                 </tr>
@@ -251,6 +292,140 @@ function LogPage() {
           </div>
         )}
       </div>
+
+      {/* 详情弹窗 */}
+      {showDetailModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl max-h-[80vh] overflow-hidden flex flex-col">
+            {/* 弹窗头部 */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <h3 className="text-lg font-semibold text-gray-900">定时任务详情</h3>
+              <button
+                onClick={handleCloseDetail}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* 弹窗内容 */}
+            <div className="flex-1 overflow-auto p-6">
+              {detailLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500"></div>
+                </div>
+              ) : selectedTask ? (
+                <div className="space-y-6">
+                  {/* 任务基本信息 */}
+                  <div className="grid grid-cols-4 gap-4">
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <div className="text-sm text-gray-500">任务名称</div>
+                      <div className="text-lg font-medium text-gray-900">{selectedTask.task_name}</div>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <div className="text-sm text-gray-500">状态</div>
+                      <div className="text-lg font-medium">
+                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(selectedTask.status)}`}>
+                          {getStatusText(selectedTask.status)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <div className="text-sm text-gray-500">耗时</div>
+                      <div className="text-lg font-medium text-gray-900">{selectedTask.duration_seconds ? `${selectedTask.duration_seconds}秒` : '-'}</div>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <div className="text-sm text-gray-500">扫描账号</div>
+                      <div className="text-lg font-medium text-gray-900">{selectedTask.accounts_scanned || 0}</div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <div className="text-sm text-gray-500">发现订单</div>
+                      <div className="text-lg font-medium text-gray-900">{selectedTask.orders_found || 0}</div>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <div className="text-sm text-gray-500">查询券码</div>
+                      <div className="text-lg font-medium text-gray-900">{selectedTask.coupons_queried || 0}</div>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <div className="text-sm text-gray-500">开始时间</div>
+                      <div className="text-sm font-medium text-gray-900">{selectedTask.started_at || '-'}</div>
+                    </div>
+                  </div>
+
+                  {selectedTask.error_message && (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                      <div className="text-sm text-red-500 font-medium">错误信息</div>
+                      <div className="text-sm text-red-700 mt-1">{selectedTask.error_message}</div>
+                    </div>
+                  )}
+
+                  {/* 扫描详情列表 */}
+                  {scanDetails.length > 0 && (
+                    <div>
+                      <h4 className="text-base font-medium text-gray-900 mb-3">
+                        扫描详情 ({scanDetails.length} 条)
+                      </h4>
+                      <div className="overflow-auto max-h-[300px] border border-gray-200 rounded-lg">
+                        <table className="w-full">
+                          <thead className="bg-gray-50 sticky top-0">
+                            <tr>
+                              <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">订单号</th>
+                              <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">订单标题</th>
+                              <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">所属账号</th>
+                              <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">券码</th>
+                            </tr>
+                          </thead>
+                          <tbody className="bg-white divide-y divide-gray-200">
+                            {scanDetails.map((detail, index) => (
+                              <tr key={index} className="hover:bg-gray-50">
+                                <td className="px-4 py-2 text-sm text-gray-900 font-mono">{detail.order_id}</td>
+                                <td className="px-4 py-2 text-sm text-gray-500 max-w-[200px] truncate" title={detail.title}>{detail.title || '-'}</td>
+                                <td className="px-4 py-2 text-sm text-gray-500">{detail.account_userid}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900">
+                                  <div className="flex flex-wrap gap-1">
+                                    {detail.coupons && detail.coupons.length > 0 ? (
+                                      detail.coupons.map((coupon, i) => (
+                                        <span key={i} className="bg-orange-100 text-orange-800 px-2 py-0.5 rounded text-xs font-mono">
+                                          {coupon}
+                                        </span>
+                                      ))
+                                    ) : (
+                                      <span className="text-gray-400">-</span>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {scanDetails.length === 0 && selectedTask.coupons_queried > 0 && (
+                    <div className="text-center py-8 text-gray-500">
+                      该任务完成时未记录详情（旧版本数据）
+                    </div>
+                  )}
+
+                  {scanDetails.length === 0 && selectedTask.coupons_queried === 0 && (
+                    <div className="text-center py-8 text-gray-500">
+                      本次任务未扫描到券码
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-center py-12 text-gray-500">
+                  加载失败
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -96,6 +96,7 @@ export const logsApi = {
   getOperations: (params) => api.get('/api/logs/operations', { params }),
   getLogins: (params) => api.get('/api/logs/logins', { params }),
   getScheduledTasks: (params) => api.get('/api/logs/scheduled-tasks', { params }),
+  getScheduledTaskDetail: (id) => api.get(`/api/logs/scheduled-tasks/${id}`),
   clearOperations: () => api.delete('/api/logs/operations'),
   clearLogins: () => api.delete('/api/logs/logins'),
   clearScheduledTasks: () => api.delete('/api/logs/scheduled-tasks')

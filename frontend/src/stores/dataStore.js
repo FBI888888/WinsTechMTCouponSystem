@@ -66,6 +66,28 @@ export const useDataStore = create((set, get) => ({
   }),
   updateOrdersPage: (page) => set({ ordersPage: page }),
 
+  // 订单页面筛选条件（持久化）
+  orderSelectedAccountId: '',
+  orderStatusFilter: '2',
+  setOrderSelectedAccountId: (id) => set({ orderSelectedAccountId: id }),
+  setOrderStatusFilter: (filter) => set({ orderStatusFilter: filter }),
+
+  // 订单同步状态（持久化，页面切换不丢失）
+  orderSyncing: false,
+  orderSyncProgress: { current: 0, total: 0, message: '' },
+  orderSyncRunId: 0,  // 用于停止同步
+  setOrderSyncing: (syncing) => set({ orderSyncing: syncing }),
+  setOrderSyncProgress: (progress) => set({ orderSyncProgress: progress }),
+  incrementSyncRunId: () => set((state) => ({ orderSyncRunId: state.orderSyncRunId + 1 })),
+
+  // 券码查询状态（持久化，页面切换不丢失）
+  orderQuerying: false,
+  orderQueryProgress: { current: 0, total: 0, message: '' },
+  orderQueryRunId: 0,  // 用于停止查询
+  setOrderQuerying: (querying) => set({ orderQuerying: querying }),
+  setOrderQueryProgress: (progress) => set({ orderQueryProgress: progress }),
+  incrementQueryRunId: () => set((state) => ({ orderQueryRunId: state.orderQueryRunId + 1 })),
+
   // 券码查询结果缓存
   couponQueryResults: [],
   couponQueryCodes: '',
@@ -109,6 +131,14 @@ export const useDataStore = create((set, get) => ({
       ordersTotal: 0,
       ordersPage: 1,
       ordersLoaded: false,
+      orderSelectedAccountId: '',
+      orderStatusFilter: '2',
+      orderSyncing: false,
+      orderSyncProgress: { current: 0, total: 0, message: '' },
+      orderSyncRunId: 0,
+      orderQuerying: false,
+      orderQueryProgress: { current: 0, total: 0, message: '' },
+      orderQueryRunId: 0,
       couponQueryResults: [],
       couponQueryCodes: '',
       logs: [],

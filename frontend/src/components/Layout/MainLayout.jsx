@@ -17,7 +17,7 @@ function MainLayout() {
       <Sidebar />
       <div className="flex-1 flex flex-col">
         <header className="bg-white shadow-sm h-16 flex items-center justify-between px-6">
-          <h2 className="text-lg font-semibold text-gray-800">WinsTechMT券码库管理系统</h2>
+          <h2 className="text-lg font-semibold text-gray-800">WinsTechMT券码库管理系统  V1.0.0</h2>
           <div className="flex items-center gap-4">
             <span className="text-sm text-gray-600">
               {user?.username} ({user?.role === 'admin' ? '管理员' : '用户'})

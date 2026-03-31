@@ -121,7 +121,7 @@ function CouponQueryPage() {
             account: {
               userid: item.userid,
               token: item.token,
-              csecuuid: item.csecuuid,
+              csecuuid: item.csecuuid || 'c34d9b03-7520-47e3-9d7c-17a3d930c48d',
               openId: item.open_id,
               openIdCipher: item.open_id_cipher
             },

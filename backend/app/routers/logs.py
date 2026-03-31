@@ -171,6 +171,42 @@ def get_scheduled_task_logs(
     return {"total": total or (skip + len(items) + (1 if has_more else 0)), "items": items, "has_more": has_more}
 
 
+@router.get("/scheduled-tasks/{task_id}")
+def get_scheduled_task_detail(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """获取定时任务详情"""
+    import json
+    task = db.query(ScheduledTaskLog).filter(ScheduledTaskLog.id == task_id).first()
+    if not task:
+        return {"success": False, "error": "任务不存在"}
+    
+    result = {
+        "id": task.id,
+        "task_name": task.task_name,
+        "status": task.status,
+        "accounts_scanned": task.accounts_scanned,
+        "orders_found": task.orders_found,
+        "coupons_queried": task.coupons_queried,
+        "error_message": task.error_message,
+        "started_at": task.started_at.isoformat() if task.started_at else None,
+        "finished_at": task.finished_at.isoformat() if task.finished_at else None,
+        "duration_seconds": task.duration_seconds,
+        "scan_details": []
+    }
+    
+    # 解析扫描详情
+    if task.scan_details:
+        try:
+            result["scan_details"] = json.loads(task.scan_details)
+        except:
+            result["scan_details"] = []
+    
+    return {"success": True, "data": result}
+
+
 @router.delete("/operations")
 def clear_operation_logs(
     days: Optional[int] = None,  # 可选：只清除指定天数前的日志

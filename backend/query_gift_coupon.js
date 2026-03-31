@@ -12,9 +12,9 @@ const fs = require('fs')
 const vm = require('vm')
 
 // ====== 你自己填写 ======
-const TOKEN = 'AgGMIpCvfG6arDOSSxHcohIDwJp4cYsBFfJo4pAwzwvl5lJTnovoL5MWjIdSSDjKUJtTrcB2jCHq-gAAAAAnMwAACGc66h5MSr04TmJQYohXMgHKxm2O4YxX1XVNTIvB9sUDDRLcseCxxbKUa112xOvv'
-const USERID = '4497823282'
-const GIFT_ID = '20062802110981774775739'
+const TOKEN = 'AgE8IxcqrfOqfKicX8NxGw-j6VHPYuEzd9-MWkfsOdWWxL4xddhm6EXxARQBq8cNMJtskfH7PQDk3gAAAAAnMwAAmu7y_L1n42FHlWLRp9lcRHfzMXeOd00ofIlne_gbioOiG05Cv_IAaVCgDeUye8C_'
+const USERID = '4360236367'
+const GIFT_ID = '20078597718041774871896'
 // ======================
 
 // 加载 H5guard.js 签名服务

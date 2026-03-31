@@ -4,6 +4,8 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import logging
 import time
+import os
+import sys
 from datetime import datetime
 from collections import defaultdict
 from sqlalchemy import text
@@ -14,16 +16,26 @@ from app.config import settings
 from app.database import init_db, SessionLocal, get_db, engine
 from app.routers import auth, accounts, users, orders, coupons, logs, settings as settings_router
 
+# 跨平台文件锁支持
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,  # 减少日志输出，只显示警告和错误
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
 # Scheduler instance
 scheduler = AsyncIOScheduler()
+
+# Scheduler lock file to prevent multiple workers from starting scheduler
+SCHEDULER_LOCK_FILE = "/tmp/mtcoupon_scheduler.lock" if sys.platform != 'win32' else os.path.join(os.path.dirname(__file__), '..', '.scheduler.lock')
+scheduler_lock_fd = None
 
 # Rate limiting storage (simple in-memory, for production use Redis)
 # Structure: {ip: {endpoint: [(timestamp, count)]}}
@@ -73,7 +85,38 @@ async def scheduled_scan_job():
 
 
 def setup_scheduler():
-    """设置定时任务"""
+    """设置定时任务（使用文件锁确保只有一个进程启动scheduler）"""
+    global scheduler_lock_fd
+    
+    # 尝试获取文件锁
+    if fcntl is not None:
+        # Unix/Linux: 使用 fcntl 文件锁
+        try:
+            scheduler_lock_fd = open(SCHEDULER_LOCK_FILE, 'w')
+            fcntl.flock(scheduler_lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            logger.info("[Scheduler] Acquired scheduler lock, this process will run the scheduler")
+        except (IOError, OSError):
+            # 另一个进程已经持有锁，不启动scheduler
+            logger.info("[Scheduler] Another process is already running the scheduler, skipping")
+            return
+    else:
+        # Windows: 使用简单的文件存在检查
+        import atexit
+        if os.path.exists(SCHEDULER_LOCK_FILE):
+            logger.info("[Scheduler] Lock file exists, another process may be running the scheduler, skipping")
+            return
+        
+        try:
+            # 创建锁文件
+            with open(SCHEDULER_LOCK_FILE, 'w') as f:
+                f.write(str(os.getpid()))
+            
+            # 注册退出时删除锁文件
+            atexit.register(lambda: os.path.exists(SCHEDULER_LOCK_FILE) and os.remove(SCHEDULER_LOCK_FILE))
+            logger.info("[Scheduler] Created lock file, this process will run the scheduler")
+        except Exception as e:
+            logger.warning(f"[Scheduler] Could not create lock file: {e}, starting scheduler anyway")
+    
     # 获取扫描间隔
     db = SessionLocal()
     try:
@@ -117,6 +160,16 @@ async def lifespan(app: FastAPI):
     if scheduler.running:
         scheduler.shutdown()
         logger.info("[Scheduler] Scheduler stopped")
+    
+    # Release scheduler lock
+    global scheduler_lock_fd
+    if scheduler_lock_fd and fcntl is not None:
+        try:
+            fcntl.flock(scheduler_lock_fd.fileno(), fcntl.LOCK_UN)
+            scheduler_lock_fd.close()
+            logger.info("[Scheduler] Released scheduler lock")
+        except:
+            pass
 
 
 app = FastAPI(
@@ -138,17 +191,23 @@ app.add_middleware(
 # Rate Limiting Middleware
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    """速率限制中间件"""
+    """速率限制中间件 + 请求计时"""
+    start_time = time.time()
+    
     # 获取客户端IP
     client_ip = request.client.host if request.client else "unknown"
 
     # 排除健康检查和静态资源
     if request.url.path in ["/", "/health", "/health/db", "/health/pool"]:
-        return await call_next(request)
+        response = await call_next(request)
+        return response
 
     # 排除内部操作接口（如批量查询订单）
     if "/pending-coupon-query" in request.url.path:
-        return await call_next(request)
+        response = await call_next(request)
+        process_time = (time.time() - start_time) * 1000
+        logger.debug(f"{request.method} {request.url.path} - {process_time:.2f}ms")
+        return response
 
     # 登录接口使用更严格的限制
     if "/login" in request.url.path or "/auth" in request.url.path:
@@ -165,7 +224,16 @@ async def rate_limit_middleware(request: Request, call_next):
                 content={"detail": "请求过于频繁，请稍后再试"}
             )
 
-    return await call_next(request)
+    response = await call_next(request)
+    
+    # 记录请求耗时
+    process_time = (time.time() - start_time) * 1000
+    if process_time > 500:  # 超过500ms记录警告
+        logger.warning(f"SLOW REQUEST: {request.method} {request.url.path} - {process_time:.2f}ms")
+    else:
+        logger.debug(f"{request.method} {request.url.path} - {process_time:.2f}ms")
+    
+    return response
 
 # Routers
 app.include_router(auth.router)

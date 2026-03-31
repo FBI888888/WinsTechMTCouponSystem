@@ -50,6 +50,7 @@ class ScheduledTaskLog(Base):
     started_at = Column(DateTime, default=datetime.now)  # 开始时间
     finished_at = Column(DateTime)  # 结束时间
     duration_seconds = Column(Integer)  # 耗时（秒）
+    scan_details = Column(Text)  # JSON格式：扫描详情（订单号、账号userid、券码等）
 
     __table_args__ = (
         Index('idx_task_started', 'task_name', 'started_at'),

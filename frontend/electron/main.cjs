@@ -169,7 +169,7 @@ ipcMain.handle('rebate-query-one', async (event, { account, orderId }) => {
       latitude: account.latitude,
       userId: account.userid,
       openId: account.openId,
-      uuid: account.csecuuid
+      uuid: account.csecuuid || 'c34d9b03-7520-47e3-9d7c-17a3d930c48d'
     })
 
     return { success: true, data: { orderId, response: { data: result.coupons } } }
@@ -216,16 +216,51 @@ ipcMain.handle('get-orders', async (event, { account, offset, limit, statusFilte
   }
 })
 
+// 当前订单同步操作ID
+let currentOrdersOperationId = null
+
 // API: Get orders list with status filter
 ipcMain.handle('api-get-orders', async (event, { userid, token, days, statusFilter, maxPages }) => {
   try {
     const MeituanAPI = require('./services/meituanAPI.cjs')
-    const orders = await MeituanAPI.getOrdersListWithStatus(userid, token, days || 7, statusFilter || 0, maxPages || 200)
-    return { success: true, data: orders }
+    
+    // 生成新的操作ID
+    currentOrdersOperationId = MeituanAPI.generateOperationId()
+    log('INFO', `开始订单同步, operationId: ${currentOrdersOperationId}`)
+    
+    const result = await MeituanAPI.getOrdersListWithStatus(
+      userid, 
+      token, 
+      days || 7, 
+      statusFilter || 0, 
+      maxPages || 200,
+      currentOrdersOperationId
+    )
+    
+    currentOrdersOperationId = null
+    
+    if (result.cancelled) {
+      log('INFO', '订单同步已取消')
+      return { success: true, data: result.orders, cancelled: true }
+    }
+    
+    return { success: true, data: result.orders }
   } catch (error) {
+    currentOrdersOperationId = null
     log('ERROR', `API get orders error: ${error.message}`)
     return { success: false, error: error.message }
   }
+})
+
+// API: Cancel orders sync
+ipcMain.handle('cancel-orders-sync', async () => {
+  const MeituanAPI = require('./services/meituanAPI.cjs')
+  if (currentOrdersOperationId) {
+    log('INFO', `取消订单同步, operationId: ${currentOrdersOperationId}`)
+    MeituanAPI.setCancelFlag(currentOrdersOperationId, true)
+    return { success: true }
+  }
+  return { success: false, message: 'No active sync operation' }
 })
 
 // Export excel

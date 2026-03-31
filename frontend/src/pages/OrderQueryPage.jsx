@@ -38,8 +38,8 @@ function OrderQueryPage() {
       toast.warning('请输入订单号')
       return
     }
-    if (!selectedAccount?.csecuuid || !selectedAccount?.open_id) {
-      toast.warning('该账号缺少必要信息(csecuuid/openId)，请先在账号管理中重新抓取')
+    if (!selectedAccount?.open_id) {
+      toast.warning('该账号缺少必要信息(openId)，请先在账号管理中重新抓取')
       return
     }
 
@@ -51,7 +51,7 @@ function OrderQueryPage() {
         account: {
           userid: selectedAccount.userid,
           token: selectedAccount.token,
-          csecuuid: selectedAccount.csecuuid,
+          csecuuid: selectedAccount.csecuuid || 'c34d9b03-7520-47e3-9d7c-17a3d930c48d',
           openId: selectedAccount.open_id,
           openIdCipher: selectedAccount.open_id_cipher
         },

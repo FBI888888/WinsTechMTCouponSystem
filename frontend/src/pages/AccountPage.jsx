@@ -31,6 +31,7 @@ function AccountPage() {
   const [lastCaptured, setLastCaptured] = useState(null)
   const [resettingCerts, setResettingCerts] = useState(false)
   const [scanningAccountId, setScanningAccountId] = useState(null)
+  const [checkingAccountId, setCheckingAccountId] = useState(null)  // 正在检查的账号ID
 
   // 扫描对话框状态
   const [scanDialogOpen, setScanDialogOpen] = useState(false)
@@ -61,6 +62,47 @@ function AccountPage() {
     }
   }
 
+  // 解析粘贴的文本格式
+  // 支持多行格式：Token: xxx\nOpenId: xxx\n...
+  // 支持单行格式：Token: xxx OpenId: xxx OpenIdCipher: xxx CsecUUID: xxx UserId: xxx
+  const parsePastedText = (text) => {
+    const result = {
+      token: '',
+      openId: '',
+      openIdCipher: '',
+      csecuuid: '',
+      userid: ''
+    }
+    
+    // 统一处理：将文本按空格或换行分割，然后匹配键值对
+    // 使用正则匹配 "Key: Value" 格式，Value 可能包含空格直到下一个 Key: 或文本结束
+    const patterns = [
+      { key: 'token', regex: /Token\s*:\s*([^\s]+(?:\s+(?!(?:Token|OpenId|OpenIdCipher|CsecUUID|UserId)\s*:)[^\s]+)*)/i },
+      { key: 'openId', regex: /OpenId\s*:\s*([^\s]+)/i },
+      { key: 'openIdCipher', regex: /OpenIdCipher\s*:\s*([^\s]+)/i },
+      { key: 'csecuuid', regex: /CsecUUID\s*:\s*([^\s]+)/i },
+      { key: 'userid', regex: /UserId\s*:\s*([^\s]+)/i }
+    ]
+    
+    for (const { key, regex } of patterns) {
+      const match = text.match(regex)
+      if (match) {
+        result[key] = match[1].trim()
+      }
+    }
+    
+    // 必须有 token 和 userid 才算有效解析
+    if (result.token && result.userid) {
+      return result
+    }
+    return null
+  }
+
+  // 构建账号URL
+  const buildAccountUrl = (userid, token) => {
+    return `https://i.meituan.com/mttouch/page/account?cevent=imt%2Fhomepage%2Fmine&userId=${userid}&token=${token}`
+  }
+
   const buildUpdatedUrl = (oldUrl, userid, token) => {
     try {
       const u = new URL(oldUrl)
@@ -81,17 +123,37 @@ function AccountPage() {
   }
 
   const handleAddOrUpdate = async () => {
-    if (!remark.trim() || !url.trim()) {
-      showMessage('error', '请填写备注名与完整URL')
+    let userid = ''
+    let token = ''
+    let openId = ''
+    let openIdCipher = ''
+    let csecuuid = ''
+    let accountUrl = ''
+
+    // 只支持粘贴文本格式（Token: xxx OpenId: xxx...）
+    const pastedData = parsePastedText(url.trim())
+    if (pastedData) {
+      userid = pastedData.userid
+      token = pastedData.token
+      openId = pastedData.openId
+      openIdCipher = pastedData.openIdCipher
+      csecuuid = pastedData.csecuuid
+      accountUrl = buildAccountUrl(userid, token)
+    } else {
+      showMessage('error', '请粘贴 Token/OpenId/OpenIdCipher/CsecUUID/UserId 格式的文本')
       return
     }
 
-    const { userid, token } = parseUserUrl(url)
-    if (!userid || !token) {
-      showMessage('error', 'URL 未能解析出 userId/token')
+    // 检查账号是否已存在
+    const existingAccount = accounts.find(a => a.userid === userid)
+    
+    // 如果账号不存在且没有填备注，提示填写
+    if (!existingAccount && !remark.trim()) {
+      showMessage('error', '新账号请填写备注名')
       return
     }
 
+    // 检查账号有效性
     let status = 'unchecked'
     try {
       const result = await accountsApi.checkStatus([{ userid, token }])
@@ -101,28 +163,48 @@ function AccountPage() {
         status = 'invalid'
       }
     } catch {
-      status = 'invalid'
+      status = 'unchecked'
     }
 
-    const capturedExtras = (lastCaptured && lastCaptured.userid === userid && lastCaptured.token === token) ? lastCaptured : null
+    // 如果是粘贴文本格式，使用解析出的数据；否则使用抓取的数据
+    const capturedExtras = pastedData ? null : (lastCaptured && lastCaptured.userid === userid && lastCaptured.token === token ? lastCaptured : null)
+
+    // 如果账号已存在，使用原有备注名
+    const finalRemark = existingAccount ? (remark.trim() || existingAccount.remark) : remark.trim()
 
     const newAccount = {
-      remark: remark.trim(),
+      remark: finalRemark,
       userid,
       token,
-      url: url.trim(),
-      csecuuid: capturedExtras?.csecuuid || '',
-      open_id: capturedExtras?.openId || '',
-      open_id_cipher: capturedExtras?.openIdCipher || ''
+      url: accountUrl,
+      status,  // 添加检查后的状态
+      csecuuid: csecuuid || capturedExtras?.csecuuid || '',
+      open_id: openId || capturedExtras?.openId || '',
+      open_id_cipher: openIdCipher || capturedExtras?.openIdCipher || ''
     }
 
     try {
-      await accountsApi.capture(newAccount)
-      await loadAccounts(true)
+      const response = await accountsApi.capture(newAccount)
+      // 直接使用返回的数据更新本地状态，而不是重新获取所有账号
+      if (response.data) {
+        const updatedAccount = response.data
+        // 检查是否已存在于列表中
+        const existingIndex = accounts.findIndex(a => a.id === updatedAccount.id)
+        if (existingIndex >= 0) {
+          // 更新现有账号
+          const newAccounts = [...accounts]
+          newAccounts[existingIndex] = updatedAccount
+          setAccounts(newAccounts)
+        } else {
+          // 添加新账号
+          setAccounts([...accounts, updatedAccount])
+        }
+      }
       setRemark('')
       setUrl('')
       setLastCaptured(null)
-      showMessage('success', '已添加/更新账号')
+      const statusMsg = status === 'normal' ? '（有效）' : status === 'invalid' ? '（无效）' : ''
+      showMessage('success', (existingAccount ? '已更新账号' : '已添加账号') + statusMsg)
     } catch (error) {
       showMessage('error', '保存失败: ' + error.message)
     }
@@ -226,6 +308,26 @@ function AccountPage() {
       showMessage('error', '检查失败: ' + error.message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  // 检查单个账号
+  const handleCheckOne = async (account) => {
+    setCheckingAccountId(account.id)
+    try {
+      const result = await accountsApi.checkStatus([{ userid: account.userid, token: account.token }])
+      const status = result.data && result.data[0]?.code === 0 ? 'normal' : 'invalid'
+      await accountsApi.update(account.id, { status })
+      // 更新本地状态
+      const newAccounts = accounts.map(a => 
+        a.id === account.id ? { ...a, status } : a
+      )
+      setAccounts(newAccounts)
+      showMessage('success', status === 'normal' ? '账号有效' : '账号已失效')
+    } catch (error) {
+      showMessage('error', '检查失败: ' + error.message)
+    } finally {
+      setCheckingAccountId(null)
     }
   }
 
@@ -533,7 +635,7 @@ function AccountPage() {
             type="text"
             value={remark}
             onChange={(e) => setRemark(e.target.value)}
-            placeholder="备注名"
+            placeholder="备注名（新账号必填，更新可留空）"
             className="flex-1 min-w-[120px] px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
           />
           <input
@@ -543,7 +645,7 @@ function AccountPage() {
               setUrl(e.target.value)
               setLastCaptured(null)
             }}
-            placeholder="完整URL，包含 userId 与 token"
+            placeholder="粘贴 Token/OpenId/OpenIdCipher/CsecUUID/UserId 格式文本"
             className="flex-[3] min-w-[300px] px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
           />
           <button onClick={handleAddOrUpdate} className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 flex items-center gap-2">
@@ -659,6 +761,17 @@ function AccountPage() {
                   </td>
                   <td className="px-4 py-3 text-sm">
                     <div className="flex items-center gap-2">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleCheckOne(account)
+                        }}
+                        disabled={checkingAccountId === account.id}
+                        className="px-3 py-1 text-xs bg-blue-50 text-blue-600 rounded hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="检查账号有效性"
+                      >
+                        {checkingAccountId === account.id ? '检查中...' : '检查'}
+                      </button>
                       <button
                         onClick={(e) => {
                           e.stopPropagation()

@@ -8,7 +8,7 @@ export const useToastStore = create((set, get) => ({
     const newToast = {
       id,
       type: 'info',
-      duration: 3000,
+      duration: 5000,
       ...toast
     }
     set(state => ({
@@ -28,19 +28,19 @@ export const useToastStore = create((set, get) => ({
   },
 
   // 便捷方法
-  success: (message, duration = 3000) => {
+  success: (message, duration = 5000) => {
     return get().addToast({ type: 'success', message, duration })
   },
 
-  error: (message, duration = 4000) => {
+  error: (message, duration = 6000) => {
     return get().addToast({ type: 'error', message, duration })
   },
 
-  warning: (message, duration = 3500) => {
+  warning: (message, duration = 5500) => {
     return get().addToast({ type: 'warning', message, duration })
   },
 
-  info: (message, duration = 3000) => {
+  info: (message, duration = 5000) => {
     return get().addToast({ type: 'info', message, duration })
   }
 }))

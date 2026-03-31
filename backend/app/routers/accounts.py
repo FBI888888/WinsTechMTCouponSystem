@@ -104,6 +104,14 @@ def capture_account(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    # 将前端传入的 status 字符串转换为 AccountStatus 枚举
+    def parse_status(status_str: str):
+        if status_str == "normal":
+            return AccountStatus.NORMAL
+        elif status_str == "invalid":
+            return AccountStatus.INVALID
+        return AccountStatus.UNCHECKED
+
     # Check if userid already exists
     existing = db.query(MTAccount).filter(MTAccount.userid == request.userid).first()
     if existing:
@@ -114,7 +122,10 @@ def capture_account(
         existing.csecuuid = request.csecuuid or existing.csecuuid
         existing.open_id = request.open_id or existing.open_id
         existing.open_id_cipher = request.open_id_cipher or existing.open_id_cipher
-        existing.status = AccountStatus.UNCHECKED
+        if request.status:
+            existing.status = parse_status(request.status)
+            from datetime import datetime
+            existing.last_check_time = datetime.now()
         db.commit()
         db.refresh(existing)
         # 返回时解密
@@ -130,8 +141,11 @@ def capture_account(
         csecuuid=request.csecuuid,
         open_id=request.open_id,
         open_id_cipher=request.open_id_cipher,
-        status=AccountStatus.UNCHECKED
+        status=parse_status(request.status) if request.status else AccountStatus.UNCHECKED
     )
+    if request.status:
+        from datetime import datetime
+        db_account.last_check_time = datetime.now()
     db.add(db_account)
     db.commit()
     db.refresh(db_account)

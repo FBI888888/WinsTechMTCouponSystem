@@ -45,6 +45,7 @@ class AccountCaptureRequest(BaseModel):
     userid: str
     token: str
     url: str
+    status: Optional[str] = None
     csecuuid: Optional[str] = None
     open_id: Optional[str] = None
     open_id_cipher: Optional[str] = None

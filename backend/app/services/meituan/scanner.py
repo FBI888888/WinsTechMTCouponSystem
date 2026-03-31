@@ -145,18 +145,20 @@ class ScheduledTaskService:
 
         return new_orders
 
-    async def query_and_save_coupons(self, db: Session, account: MTAccount, order: dict) -> str:
+    async def query_and_save_coupons(self, db: Session, account: MTAccount, order: dict) -> tuple:
         """
         查询订单券码并保存
         Returns:
-            'success'=成功, 'failed'=失败, 'wind_control'=风控且重试耗尽
+            (status, detail) 元组
+            status: 'success'=成功, 'failed'=失败, 'wind_control'=风控且重试耗尽
+            detail: 成功时返回券码详情字典，失败时返回None
         """
         WC_MAX_RETRIES = 3
         WC_WAIT_SECONDS = 10
 
         order_view_id = str(order.get("stringOrderId", "") or order.get("orderid", ""))
         if not order_view_id:
-            return "failed"
+            return "failed", None
 
         token = get_decrypted_token(account)
 
@@ -177,15 +179,15 @@ class ScheduledTaskService:
                         logger.warning(
                             f"[风控] 订单 {order_view_id} 连续{WC_MAX_RETRIES}次遇到风控，跳过该订单"
                         )
-                        return "wind_control"
+                        return "wind_control", None
 
                 if not result.get("success"):
                     logger.warning(f"Query coupons failed for order {order_view_id}: {result.get('error')}")
-                    return "failed"
+                    return "failed", None
 
                 coupons = result.get("coupons", [])
                 if not coupons:
-                    return "failed"
+                    return "failed", None
 
                 # 先保存订单
                 order_record = Order(
@@ -206,6 +208,7 @@ class ScheduledTaskService:
                 db.flush()  # 获取order.id
 
                 # 保存券码
+                coupon_codes = []
                 for coupon_info in coupons:
                     coupon_record = Coupon(
                         order_id=order_record.id,
@@ -217,16 +220,25 @@ class ScheduledTaskService:
                         raw_data={"data": coupons}
                     )
                     db.add(coupon_record)
+                    coupon_codes.append(coupon_info.get("coupon", ""))
 
                 db.commit()
-                return "success"
+                
+                # 返回详情
+                detail = {
+                    "order_id": order_view_id,
+                    "title": order.get("title", ""),
+                    "account_userid": account.userid,
+                    "coupons": coupon_codes
+                }
+                return "success", detail
 
             except Exception as e:
                 logger.error(f"Query and save coupons error for order {order_view_id}: {e}")
                 db.rollback()
-                return "failed"
+                return "failed", None
 
-        return "wind_control"  # Should not reach here
+        return "wind_control", None  # Should not reach here
 
     async def _call_meituan_api(self, token: str, order_id: str, account: MTAccount = None) -> dict:
         """调用Node.js脚本查询美团API"""
@@ -241,7 +253,7 @@ class ScheduledTaskService:
             options["userId"] = account.userid or ""
             options["openId"] = account.open_id or ""
             options["unionId"] = ""  # 如果有unionId字段可以添加
-            options["uuid"] = account.csecuuid or ""
+            options["uuid"] = account.csecuuid or "c34d9b03-7520-47e3-9d7c-17a3d930c48d"
 
         args = json.dumps({
             "token": token,
@@ -309,6 +321,9 @@ class ScheduledTaskService:
             "coupons_saved": 0,
             "is_wind_control": False  # 是否遇到风控
         }
+        
+        # 收集扫描详情
+        scan_details = []
 
         # 追踪连续风控次数
         consecutive_wind_control = 0
@@ -362,10 +377,13 @@ class ScheduledTaskService:
 
             # 4. 查询券码并保存
             for order in new_orders:
-                result = await self.query_and_save_coupons(db, account, order)
+                result, detail = await self.query_and_save_coupons(db, account, order)
                 if result == "success":
                     stats["coupons_saved"] += 1
                     consecutive_wind_control = 0  # 成功后重置计数
+                    # 收集详情
+                    if detail:
+                        scan_details.append(detail)
                 elif result == "wind_control":
                     consecutive_wind_control += 1
                     logger.warning(
@@ -396,6 +414,9 @@ class ScheduledTaskService:
             task_log.duration_seconds = int((task_log.finished_at - task_log.started_at).total_seconds())
             if stats["is_wind_control"]:
                 task_log.error_message = "部分订单因风控跳过"
+            # 保存扫描详情
+            if scan_details:
+                task_log.scan_details = json.dumps(scan_details, ensure_ascii=False)
             db.commit()
 
             logger.info(f"[扫描] 账号 {account.userid} 扫描完成: {stats}")
@@ -433,6 +454,9 @@ class ScheduledTaskService:
             "errors": [],
             "stopped_by_wind_control": False  # 是否因连续风控停止
         }
+        
+        # 收集扫描详情
+        scan_details = []
 
         # 追踪连续风控账号数
         consecutive_wind_control_accounts = 0
@@ -495,10 +519,13 @@ class ScheduledTaskService:
 
                     # 5. 查询券码并保存
                     for order in new_orders:
-                        result = await self.query_and_save_coupons(db, account, order)
+                        result, detail = await self.query_and_save_coupons(db, account, order)
                         if result == "success":
                             stats["coupons_saved"] += 1
                             consecutive_wind_control_orders = 0  # 成功后重置
+                            # 收集详情
+                            if detail:
+                                scan_details.append(detail)
                         elif result == "wind_control":
                             consecutive_wind_control_orders += 1
                             logger.warning(
@@ -538,6 +565,9 @@ class ScheduledTaskService:
             task_log.duration_seconds = int((task_log.finished_at - task_log.started_at).total_seconds())
             if stats["stopped_by_wind_control"]:
                 task_log.error_message = f"因连续{MAX_CONSECUTIVE_WIND_CONTROL_ACCOUNTS}个账号遇到风控而停止"
+            # 保存扫描详情
+            if scan_details:
+                task_log.scan_details = json.dumps(scan_details, ensure_ascii=False)
             db.commit()
 
             logger.info(f"[定时任务] 扫描完成: {stats}")

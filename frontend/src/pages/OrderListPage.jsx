@@ -20,25 +20,29 @@ function OrderListPage() {
   const {
     accounts, accountsLoaded, fetchAccounts,
     orders, ordersTotal, ordersPage, ordersPageSize, ordersLoaded, ordersFilters,
-    setOrders, updateOrdersPage
+    setOrders, updateOrdersPage,
+    // 筛选条件（持久化）
+    orderSelectedAccountId, orderStatusFilter, setOrderSelectedAccountId, setOrderStatusFilter,
+    // 同步和查询状态（持久化）
+    orderSyncing, orderSyncProgress, setOrderSyncing, setOrderSyncProgress,
+    orderSyncRunId, incrementSyncRunId,
+    orderQuerying, orderQueryProgress, setOrderQuerying, setOrderQueryProgress,
+    orderQueryRunId, incrementQueryRunId
   } = useDataStore()
   const toast = useToastStore()
 
   // 本地状态
   const [loading, setLoading] = useState(false)
-  const [syncing, setSyncing] = useState(false)
-  const [querying, setQuerying] = useState(false)
   const [maxPages, setMaxPages] = useState(200)
   const [timeRange, setTimeRange] = useState(30) // 默认近一个月
 
-  // 筛选条件（本地状态，用于输入）
-  const [selectedAccountId, setSelectedAccountId] = useState('')
-  const [statusFilter, setStatusFilter] = useState('2') // 默认待使用
+  // 筛选条件（从全局状态读取）
+  const selectedAccountId = orderSelectedAccountId
+  const setSelectedAccountId = setOrderSelectedAccountId
+  const statusFilter = orderStatusFilter
+  const setStatusFilter = setOrderStatusFilter
   const [pageSize, setPageSize] = useState(ordersPageSize)
   const [searchKeyword, setSearchKeyword] = useState('') // 搜索关键词
-
-  const [syncProgress, setSyncProgress] = useState({ current: 0, total: 0, message: '' })
-  const [queryProgress, setQueryProgress] = useState({ current: 0, total: 0, message: '' })
 
   // 右键菜单状态
   const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, order: null })
@@ -48,18 +52,15 @@ function OrderListPage() {
   const [couponQueryResult, setCouponQueryResult] = useState(null)
   const [couponQueryLoading, setCouponQueryLoading] = useState(false)
 
-  const queryRunIdRef = useRef(0)
-  const syncRunIdRef = useRef(0)
-
   const loadAccounts = async () => {
     // 如果已加载，直接返回
     if (accountsLoaded) return
 
     try {
       const data = await fetchAccounts(accountsApi)
-      // 设置默认账号为第一个
-      if (data && data.length > 0 && !selectedAccountId) {
-        setSelectedAccountId(String(data[0].id))
+      // 只有在没有选择任何账号时，才设置默认账号为第一个
+      if (data && data.length > 0 && !orderSelectedAccountId) {
+        setOrderSelectedAccountId(String(data[0].id))
       }
     } catch (error) {
       console.error('Failed to load accounts:', error)
@@ -99,19 +100,19 @@ function OrderListPage() {
     loadAccounts()
   }, [])
 
-  // 账号加载完成后设置默认值
+  // 账号加载完成后设置默认值（仅当没有选择任何账号时）
   useEffect(() => {
-    if (accounts && accounts.length > 0 && !selectedAccountId) {
-      setSelectedAccountId(String(accounts[0].id))
+    if (accounts && accounts.length > 0 && !orderSelectedAccountId) {
+      setOrderSelectedAccountId(String(accounts[0].id))
     }
   }, [accounts])
 
   // 监听账号或状态筛选变化，自动重新加载订单
   useEffect(() => {
-    if (selectedAccountId) {
+    if (orderSelectedAccountId) {
       loadOrders(1, pageSize, true)
     }
-  }, [selectedAccountId, statusFilter, searchKeyword])
+  }, [orderSelectedAccountId, orderStatusFilter, searchKeyword])
 
   // 分页控制
   const totalPages = Math.ceil(ordersTotal / ordersPageSize)
@@ -141,17 +142,18 @@ function OrderListPage() {
       return
     }
 
-    const myRunId = ++syncRunIdRef.current
-    setSyncing(true)
-    setSyncProgress({ current: 0, total: 0, message: '正在获取已有订单ID...' })
+    incrementSyncRunId()
+    const myRunId = orderSyncRunId + 1  // 获取新的 runId
+    setOrderSyncing(true)
+    setOrderSyncProgress({ current: 0, total: 0, message: '正在获取已有订单ID...' })
 
     try {
       // 1. 先从后端获取该账号已有的订单ID集合（轻量请求）
       const existingIdsResponse = await ordersApi.getIds({ account_id: selectedAccountId })
-      if (myRunId !== syncRunIdRef.current) return
+      if (myRunId !== useDataStore.getState().orderSyncRunId) return
 
       const existingIds = new Set(existingIdsResponse.data?.ids || [])
-      setSyncProgress({ current: 0, total: maxPages, message: `已有 ${existingIds.size} 条订单，正在获取远程数据...` })
+      setOrderSyncProgress({ current: 0, total: maxPages, message: `已有 ${existingIds.size} 条订单，正在获取远程数据...` })
 
       // 2. 从美团API获取订单列表
       const result = await window.electronAPI.apiGetOrders({
@@ -162,12 +164,12 @@ function OrderListPage() {
         maxPages: parseInt(maxPages) || 200
       })
 
-      if (myRunId !== syncRunIdRef.current) return
+      if (myRunId !== useDataStore.getState().orderSyncRunId) return
 
       if (!result.success) {
         toast.error(`获取订单失败: ${result.error || '未知错误'}`)
-        setSyncing(false)
-        setSyncProgress({ current: 0, total: 0, message: '' })
+        setOrderSyncing(false)
+        setOrderSyncProgress({ current: 0, total: 0, message: '' })
         return
       }
 
@@ -228,7 +230,7 @@ function OrderListPage() {
       const newOrders = formattedOrders.filter(order => !existingIds.has(order.orderId))
       const duplicateCount = formattedOrders.length - newOrders.length
 
-      setSyncProgress({
+      setOrderSyncProgress({
         current: maxPages,
         total: maxPages,
         message: `获取 ${formattedOrders.length} 条，已存在 ${duplicateCount} 条，新增 ${newOrders.length} 条${newOrders.length > 0 ? '，正在保存...' : ''}`
@@ -237,8 +239,8 @@ function OrderListPage() {
       // 5. 只保存新增订单
       if (newOrders.length === 0) {
         toast.info('没有新订单需要保存')
-        setSyncing(false)
-        setTimeout(() => setSyncProgress({ current: 0, total: 0, message: '' }), 2000)
+        setOrderSyncing(false)
+        setTimeout(() => setOrderSyncProgress({ current: 0, total: 0, message: '' }), 2000)
         return
       }
 
@@ -247,34 +249,41 @@ function OrderListPage() {
         orders: newOrders
       })
 
-      if (myRunId !== syncRunIdRef.current) return
+      if (myRunId !== useDataStore.getState().orderSyncRunId) return
 
       if (saveResponse.data?.success) {
-        setSyncProgress({
+        setOrderSyncProgress({
           current: maxPages,
           total: maxPages,
           message: `同步完成！新增 ${saveResponse.data?.new_count || newOrders.length} 条`
         })
         await loadOrders(1, pageSize, true)
-        setTimeout(() => setSyncProgress({ current: 0, total: 0, message: '' }), 3000)
+        setTimeout(() => setOrderSyncProgress({ current: 0, total: 0, message: '' }), 3000)
       } else {
         toast.error('保存失败: ' + (saveResponse.data?.message || '未知错误'))
-        setSyncProgress({ current: 0, total: 0, message: '' })
+        setOrderSyncProgress({ current: 0, total: 0, message: '' })
       }
 
     } catch (error) {
       console.error('Sync orders error:', error)
       toast.error('同步失败: ' + error.message)
-      setSyncProgress({ current: 0, total: 0, message: '' })
+      setOrderSyncProgress({ current: 0, total: 0, message: '' })
     } finally {
-      setSyncing(false)
+      setOrderSyncing(false)
     }
   }
 
-  const handleStopSync = () => {
-    syncRunIdRef.current++
-    setSyncing(false)
-    setSyncProgress({ current: 0, total: 0, message: '' })
+  const handleStopSync = async () => {
+    incrementSyncRunId()
+    // 调用 Electron API 取消同步
+    try {
+      await window.electronAPI.cancelOrdersSync()
+      toast.info('正在停止同步...')
+    } catch (error) {
+      console.error('Cancel sync error:', error)
+    }
+    setOrderSyncing(false)
+    setOrderSyncProgress({ current: 0, total: 0, message: '' })
   }
 
   // 券码查询并落库（优化版：使用后端API一次性获取待查询订单）
@@ -290,14 +299,15 @@ function OrderListPage() {
       return
     }
 
-    if (!account.csecuuid || !account.open_id || !account.open_id_cipher) {
-      toast.warning('该账号缺少 csecuuid/openId/openIdCipher，请先在账号管理中重新抓取并保存')
+    if (!account.open_id || !account.open_id_cipher) {
+      toast.warning('该账号缺少 openId/openIdCipher，请先在账号管理中重新抓取并保存')
       return
     }
 
-    const myRunId = ++queryRunIdRef.current
-    setQuerying(true)
-    setQueryProgress({ current: 0, total: 0, message: '正在获取待查询订单...' })
+    incrementQueryRunId()
+    const myRunId = orderQueryRunId + 1  // 获取新的 runId
+    setOrderQuerying(true)
+    setOrderQueryProgress({ current: 0, total: 0, message: '正在获取待查询订单...' })
 
     let successCount = 0
     let failCount = 0
@@ -311,36 +321,48 @@ function OrderListPage() {
         status_filter: statusFilter && statusFilter !== '0' ? parseInt(statusFilter) : undefined
       })
 
-      if (myRunId !== queryRunIdRef.current) return
+      if (myRunId !== useDataStore.getState().orderQueryRunId) return
 
       const ordersToQuery = response.data?.items || []
       const totalCount = response.data?.total || 0
 
       if (ordersToQuery.length === 0) {
         toast.info('所有订单都已查询过券码')
-        setQuerying(false)
-        setQueryProgress({ current: 0, total: 0, message: '' })
+        setOrderQuerying(false)
+        setOrderQueryProgress({ current: 0, total: 0, message: '' })
         return
       }
 
-      setQueryProgress({
+      // 单次最多扫描1000个订单
+      const MAX_SCAN_COUNT = 1000
+      const actualQueryCount = Math.min(ordersToQuery.length, MAX_SCAN_COUNT)
+      const limited = ordersToQuery.length > MAX_SCAN_COUNT
+
+      setOrderQueryProgress({
         current: 0,
-        total: ordersToQuery.length,
-        message: `待查询 ${ordersToQuery.length} 条订单（已跳过已查询成功的订单）`
+        total: actualQueryCount,
+        message: limited 
+          ? `待查询 ${ordersToQuery.length} 条，本次扫描前 ${MAX_SCAN_COUNT} 条` 
+          : `待查询 ${ordersToQuery.length} 条订单`
       })
 
-      // 并发控制：每次最多2个并发请求
+      // 如果超过限制，只取前1000个
+      const queryList = limited ? ordersToQuery.slice(0, MAX_SCAN_COUNT) : ordersToQuery
+
+      // 并发控制：每次最多3个并发请求
       const CONCURRENCY = 3
       const REQUEST_DELAY = 500  // 批次间延迟
 
       // 2. 分批并行处理
-      for (let i = 0; i < ordersToQuery.length && myRunId === queryRunIdRef.current; i += CONCURRENCY) {
-        const batch = ordersToQuery.slice(i, i + CONCURRENCY)
+      for (let i = 0; i < queryList.length && myRunId === useDataStore.getState().orderQueryRunId; i += CONCURRENCY) {
+        const batch = queryList.slice(i, i + CONCURRENCY)
 
-        setQueryProgress({
+        setOrderQueryProgress({
           current: i,
-          total: ordersToQuery.length,
-          message: `正在查询 ${i + 1}-${Math.min(i + CONCURRENCY, ordersToQuery.length)}/${ordersToQuery.length}...`
+          total: actualQueryCount,
+          message: limited 
+            ? `正在查询 ${i + 1}-${Math.min(i + CONCURRENCY, actualQueryCount)}/${actualQueryCount} (共${ordersToQuery.length}条)...`
+            : `正在查询 ${i + 1}-${Math.min(i + CONCURRENCY, actualQueryCount)}/${actualQueryCount}...`
         })
 
         // 并行执行批次内的请求
@@ -349,7 +371,7 @@ function OrderListPage() {
             account: {
               userid: account.userid,
               token: account.token,
-              csecuuid: account.csecuuid,
+              csecuuid: account.csecuuid || 'c34d9b03-7520-47e3-9d7c-17a3d930c48d',
               openId: account.open_id,
               openIdCipher: account.open_id_cipher
             },
@@ -399,13 +421,13 @@ function OrderListPage() {
         }
 
         // 批次间延迟（避免请求过于频繁）
-        if (i + CONCURRENCY < ordersToQuery.length && myRunId === queryRunIdRef.current) {
+        if (i + CONCURRENCY < queryList.length && myRunId === useDataStore.getState().orderQueryRunId) {
           const wait = REQUEST_DELAY + Math.floor(Math.random() * 300)
           await new Promise(resolve => setTimeout(resolve, wait))
         }
       }
 
-      if (myRunId !== queryRunIdRef.current) return
+      if (myRunId !== useDataStore.getState().orderQueryRunId) return
 
       // 批量更新订单的券码查询状态
       if (successOrderIds.length > 0) {
@@ -423,27 +445,29 @@ function OrderListPage() {
         }
       }
 
-      setQueryProgress({
-        current: ordersToQuery.length,
-        total: ordersToQuery.length,
-        message: `查询完成！成功 ${successCount} 条，失败 ${failCount} 条`
+      setOrderQueryProgress({
+        current: actualQueryCount,
+        total: actualQueryCount,
+        message: limited 
+          ? `本次扫描完成！成功 ${successCount} 条，失败 ${failCount} 条（共${ordersToQuery.length}条待查询）`
+          : `查询完成！成功 ${successCount} 条，失败 ${failCount} 条`
       })
 
       await loadOrders(ordersPage, ordersPageSize, true)
-      setTimeout(() => setQueryProgress({ current: 0, total: 0, message: '' }), 5000)
+      setTimeout(() => setOrderQueryProgress({ current: 0, total: 0, message: '' }), 5000)
 
     } catch (error) {
       console.error('Query coupons error:', error)
       toast.error('查询失败: ' + error.message)
     } finally {
-      setQuerying(false)
+      setOrderQuerying(false)
     }
   }
 
   const handleStopQuery = () => {
-    queryRunIdRef.current++
-    setQuerying(false)
-    setQueryProgress({ current: 0, total: 0, message: '' })
+    incrementQueryRunId()
+    setOrderQuerying(false)
+    setOrderQueryProgress({ current: 0, total: 0, message: '' })
   }
 
   // 右键菜单处理
@@ -470,7 +494,7 @@ function OrderListPage() {
       return
     }
 
-    if (!account.csecuuid || !account.open_id || !account.open_id_cipher) {
+    if (!account.open_id || !account.open_id_cipher) {
       toast.warning('该账号缺少必要信息，请先在账号管理中重新抓取')
       return
     }
@@ -485,7 +509,7 @@ function OrderListPage() {
         account: {
           userid: account.userid,
           token: account.token,
-          csecuuid: account.csecuuid,
+          csecuuid: account.csecuuid || 'c34d9b03-7520-47e3-9d7c-17a3d930c48d',
           openId: account.open_id,
           openIdCipher: account.open_id_cipher
         },
@@ -646,7 +670,7 @@ function OrderListPage() {
 
           <button
             onClick={() => loadOrders(1, pageSize, true)}
-            disabled={loading || syncing || querying}
+            disabled={loading || orderSyncing || orderQuerying}
             className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 flex items-center gap-2 disabled:opacity-50"
           >
             <Database className={`w-4 h-4 ${loading ? 'animate-pulse' : ''}`} />
@@ -654,21 +678,21 @@ function OrderListPage() {
           </button>
 
           <button
-            onClick={syncing ? handleStopSync : handleSyncOrders}
-            disabled={loading || querying}
-            className={`px-4 py-2 ${syncing ? 'bg-red-500 hover:bg-red-600' : 'bg-blue-500 hover:bg-blue-600'} text-white rounded-lg flex items-center gap-2 disabled:opacity-50`}
+            onClick={orderSyncing ? handleStopSync : handleSyncOrders}
+            disabled={loading || orderQuerying}
+            className={`px-4 py-2 ${orderSyncing ? 'bg-red-500 hover:bg-red-600' : 'bg-blue-500 hover:bg-blue-600'} text-white rounded-lg flex items-center gap-2 disabled:opacity-50`}
           >
-            <Download className={`w-4 h-4 ${syncing ? 'animate-pulse' : ''}`} />
-            {syncing ? '停止同步' : '同步订单'}
+            <Download className={`w-4 h-4 ${orderSyncing ? 'animate-pulse' : ''}`} />
+            {orderSyncing ? '停止同步' : '同步订单'}
           </button>
 
           <button
-            onClick={querying ? handleStopQuery : handleQueryCoupons}
-            disabled={loading || syncing}
-            className={`px-4 py-2 ${querying ? 'bg-red-500 hover:bg-red-600' : 'bg-purple-500 hover:bg-purple-600'} text-white rounded-lg flex items-center gap-2 disabled:opacity-50`}
+            onClick={orderQuerying ? handleStopQuery : handleQueryCoupons}
+            disabled={loading || orderSyncing}
+            className={`px-4 py-2 ${orderQuerying ? 'bg-red-500 hover:bg-red-600' : 'bg-purple-500 hover:bg-purple-600'} text-white rounded-lg flex items-center gap-2 disabled:opacity-50`}
           >
-            <Search className={`w-4 h-4 ${querying ? 'animate-pulse' : ''}`} />
-            {querying ? '停止扫描' : '券码扫描'}
+            <Search className={`w-4 h-4 ${orderQuerying ? 'animate-pulse' : ''}`} />
+            {orderQuerying ? '停止扫描' : '券码扫描'}
           </button>
 
           <button
@@ -684,10 +708,10 @@ function OrderListPage() {
         </div>
 
         {/* 同步进度 */}
-        {syncing && syncProgress.message && (
+        {orderSyncing && orderSyncProgress.message && (
           <div className="mt-4">
             <div className="flex justify-between text-sm text-gray-600 mb-1">
-              <span>{syncProgress.message}</span>
+              <span>{orderSyncProgress.message}</span>
             </div>
             <div className="w-full bg-gray-200 rounded-full h-2">
               <div
@@ -699,16 +723,16 @@ function OrderListPage() {
         )}
 
         {/* 查询进度 */}
-        {querying && queryProgress.message && (
+        {orderQuerying && orderQueryProgress.message && (
           <div className="mt-4">
             <div className="flex justify-between text-sm text-gray-600 mb-1">
-              <span>{queryProgress.message}</span>
-              <span>{queryProgress.current} / {queryProgress.total}</span>
+              <span>{orderQueryProgress.message}</span>
+              <span>{orderQueryProgress.current} / {orderQueryProgress.total}</span>
             </div>
             <div className="w-full bg-gray-200 rounded-full h-2">
               <div
                 className="bg-orange-500 h-2 rounded-full transition-all"
-                style={{ width: `${queryProgress.total > 0 ? (queryProgress.current / queryProgress.total) * 100 : 0}%` }}
+                style={{ width: `${orderQueryProgress.total > 0 ? (orderQueryProgress.current / orderQueryProgress.total) * 100 : 0}%` }}
               />
             </div>
           </div>

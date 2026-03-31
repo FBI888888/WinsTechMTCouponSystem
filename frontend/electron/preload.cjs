@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const result = await ipcRenderer.invoke('api-get-orders', params)
     return result
   },
+  // Cancel orders sync
+  cancelOrdersSync: () => ipcRenderer.invoke('cancel-orders-sync'),
 
   // Export
   exportExcel: (params) => ipcRenderer.invoke('export-excel', params),

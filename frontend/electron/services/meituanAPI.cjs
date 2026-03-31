@@ -7,6 +7,29 @@ const path = require('path')
 const fs = require('fs')
 const vm = require('vm')
 
+// 取消标志存储
+const cancelFlags = new Map()
+
+// 设置取消标志
+function setCancelFlag(operationId, cancelled) {
+  cancelFlags.set(operationId, cancelled)
+}
+
+// 检查是否已取消
+function isCancelled(operationId) {
+  return cancelFlags.get(operationId) === true
+}
+
+// 清除取消标志
+function clearCancelFlag(operationId) {
+  cancelFlags.delete(operationId)
+}
+
+// 生成唯一操作ID
+function generateOperationId() {
+  return Date.now().toString(36) + Math.random().toString(36).substr(2)
+}
+
 // 使用 VM 沙箱加载 H5guard.js，避免污染 global
 let h5guardContext = null
 let getVerifyFunc = null
@@ -347,8 +370,14 @@ class MeituanAPI {
 
   /**
    * 获取订单列表（带状态筛选）
+   * @param {string} userid
+   * @param {string} token
+   * @param {number} days
+   * @param {number} statusFilter
+   * @param {number} maxPages
+   * @param {string} operationId - 可选的操作ID，用于取消
    */
-  static async getOrdersListWithStatus(userid, token, days = 7, statusFilter = 0, maxPages = 200) {
+  static async getOrdersListWithStatus(userid, token, days = 7, statusFilter = 0, maxPages = 200, operationId = null) {
     const allOrders = []
     let offset = 0
     let currentPage = 0
@@ -358,7 +387,7 @@ class MeituanAPI {
     const daysAgo = new Date(today.getTime() - days * 24 * 60 * 60 * 1000)
 
     console.log('========== 开始获取订单列表 ==========')
-    console.log(`参数: userid=${userid}, days=${days}, statusFilter=${statusFilter}, maxPages=${maxPages}`)
+    console.log(`参数: userid=${userid}, days=${days}, statusFilter=${statusFilter}, maxPages=${maxPages}, operationId=${operationId}`)
     console.log(`时间范围: ${daysAgo.toLocaleString('zh-CN')} 至 ${today.toLocaleString('zh-CN')}`)
 
     const headers = {
@@ -380,6 +409,13 @@ class MeituanAPI {
     }
 
     while (check) {
+      // 检查是否被取消
+      if (operationId && isCancelled(operationId)) {
+        console.log(`[取消] 订单同步已被取消，当前页: ${currentPage}`)
+        clearCancelFlag(operationId)
+        return { orders: allOrders, cancelled: true }
+      }
+
       currentPage++
 
       // 检查是否超过最大页数
@@ -484,7 +520,7 @@ class MeituanAPI {
     console.log(`========== 订单获取完成 ==========`)
     console.log(`总计: 获取 ${currentPage} 页, 共 ${allOrders.length} 条有效订单`)
 
-    return allOrders
+    return { orders: allOrders, cancelled: false }
   }
 
   /**
@@ -1562,4 +1598,8 @@ module.exports = MeituanAPI
 module.exports.resetH5guard = resetH5guard
 module.exports.getFingerprintInfo = getFingerprintInfo
 module.exports.getSignedUrl = getSignedUrl
+module.exports.setCancelFlag = setCancelFlag
+module.exports.isCancelled = isCancelled
+module.exports.clearCancelFlag = clearCancelFlag
+module.exports.generateOperationId = generateOperationId
 

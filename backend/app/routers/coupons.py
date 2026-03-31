@@ -274,7 +274,7 @@ async def query_coupons_backend(
             options = {
                 "userId": account.userid or "",
                 "openId": account.open_id or "",
-                "uuid": account.csecuuid or ""
+                "uuid": account.csecuuid or "c34d9b03-7520-47e3-9d7c-17a3d930c48d"
             }
             api_result = await call_meituan_api(decrypted_token, query_order_id, options)
 
