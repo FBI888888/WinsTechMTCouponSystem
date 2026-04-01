@@ -29,6 +29,7 @@ class Order(Base):
     # Relationships
     account = relationship("MTAccount", back_populates="orders")
     coupons = relationship("Coupon", back_populates="order")
+    coupon_history = relationship("CouponHistory", back_populates="order")
 
     # 复合索引
     __table_args__ = (

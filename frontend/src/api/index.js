@@ -78,7 +78,8 @@ export const couponsApi = {
   get: (id) => api.get(`/api/coupons/${id}`),
   query: (data) => api.post('/api/coupons/query', data),
   queryBackend: (data) => api.post('/api/coupons/query-backend', data),
-  batchUpdate: (data) => api.post('/api/coupons/batch-update', data)
+  batchUpdate: (data) => api.post('/api/coupons/batch-update', data),
+  getDetailByCode: (couponCode) => api.get(`/api/coupons/detail/by-code/${couponCode}`)
 }
 
 // Users API

@@ -1,6 +1,6 @@
 {
   "name": "mt-coupon-frontend",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "main": "electron/main.cjs",
   "type": "module",
@@ -69,7 +69,7 @@
       "installerHeaderIcon": "win.ico",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "WinsTechMT券码库管理系统",
+      "shortcutName": "Wins券码库",
       "deleteAppDataOnUninstall": false,
       "displayLanguageSelector": false,
       "installerLanguages": [

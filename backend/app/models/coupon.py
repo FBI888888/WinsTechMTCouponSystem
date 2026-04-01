@@ -23,6 +23,7 @@ class Coupon(Base):
     # Relationships
     order = relationship("Order", back_populates="coupons")
     account = relationship("MTAccount", back_populates="coupons")
+    history = relationship("CouponHistory", back_populates="coupon", cascade="all, delete-orphan")
 
     # 复合索引
     __table_args__ = (

@@ -1,11 +1,10 @@
 import { useState, useEffect } from 'react'
 import { couponsApi } from '../api'
-import { Play, Download, Trash2, RefreshCw, Copy, Database } from 'lucide-react'
+import { Play, Download, Trash2, RefreshCw, Database, ArrowRight, Info, X, Clock, User, FileText, AlertCircle } from 'lucide-react'
 import { useDataStore } from '../stores/dataStore'
 import { useToastStore } from '../stores/toastStore'
 
 function CouponQueryPage() {
-  // 从 store 获取持久化数据
   const {
     couponQueryResults: storedResults,
     couponQueryCodes: storedCodes,
@@ -20,17 +19,48 @@ function CouponQueryPage() {
   const [backendLoading, setBackendLoading] = useState(false)
   const [progress, setProgress] = useState({ current: 0, total: 0 })
 
-  // 同步结果到 store
+  // 详情弹窗状态
+  const [showDetail, setShowDetail] = useState(false)
+  const [detailData, setDetailData] = useState(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+
   useEffect(() => {
     setCouponQueryData(results, couponCodes)
   }, [results, couponCodes])
 
-  // 复制券码信息到剪贴板
+  // 获取券码详情
+  const handleShowDetail = async (couponCode) => {
+    setDetailLoading(true)
+    setShowDetail(true)
+    setDetailData(null)
+
+    try {
+      const response = await couponsApi.getDetailByCode(couponCode)
+      setDetailData(response.data)
+    } catch (error) {
+      console.error('获取详情失败:', error)
+      toast.error('获取详情失败: ' + (error.response?.data?.detail || error.message))
+      setShowDetail(false)
+    } finally {
+      setDetailLoading(false)
+    }
+  }
+
+  // 关闭弹窗
+  const handleCloseDetail = () => {
+    setShowDetail(false)
+    setDetailData(null)
+  }
+
   const handleCopy = async (result) => {
-    const lines = [`券码：${result.coupon_code}`]
+    const lines = [`券码：${result.current_coupon_code || result.coupon_code}`]
+
+    if (result.old_coupon_code) {
+      lines.push(`原券码：${result.old_coupon_code}（已变更）`)
+    }
+
     lines.push(`券码状态：${result.coupon_status || '-'}`)
 
-    // 只有已使用状态才添加核销信息
     if (result.verify_time) {
       lines.push(`核销时间：${result.verify_time}`)
     }
@@ -38,23 +68,26 @@ function CouponQueryPage() {
       lines.push(`核销门店：${result.verify_poi_name}`)
     }
 
-    // 订单号或礼物号
     const orderId = result.order_view_id !== '-' ? result.order_view_id : result.gift_id
     const orderLabel = result.gift_id !== '-' ? '礼物号' : '订单号'
     lines.push(`${orderLabel}：${orderId || '-'}`)
     lines.push(`MTUserID：${result.userid || '-'}`)
 
+    if (result.code_changed) {
+      lines.push(`变更类型：${getChangeTypeText(result.change_type)}`)
+    }
+    if (result.change_count > 0) {
+      lines.push(`历史变更次数：${result.change_count}`)
+    }
+
     const text = lines.join('\n')
 
     try {
       await navigator.clipboard.writeText(text)
-      // 简单的成功提示
       const btn = document.getElementById(`copy-btn-${result.coupon_code}`)
       if (btn) {
         btn.textContent = '已复制'
-        setTimeout(() => {
-          btn.textContent = '复制'
-        }, 1500)
+        setTimeout(() => { btn.textContent = '复制' }, 1500)
       }
     } catch (error) {
       console.error('复制失败:', error)
@@ -76,17 +109,14 @@ function CouponQueryPage() {
     const allResults = []
 
     try {
-      // 1. 先从数据库查询券码关联的账号信息
       const dbResponse = await couponsApi.query({ coupon_codes: codes })
       const dbResults = dbResponse.data || []
 
-      // 2. 遍历结果，调用美团API获取最新状态
       for (let i = 0; i < dbResults.length; i++) {
         const item = dbResults[i]
         setProgress({ current: i + 1, total: codes.length })
 
         if (item.status !== 'found' || !item.userid || !item.token) {
-          // 数据库中没有找到或缺少账号信息
           const idStr = String(item.order_view_id || '')
           const isGiftId = idStr.length > 20 || /^[a-zA-Z]/.test(idStr)
           const displayOrderId = isGiftId ? '-' : (item.order_view_id || '-')
@@ -94,6 +124,7 @@ function CouponQueryPage() {
 
           allResults.push({
             coupon_code: item.coupon_code,
+            current_coupon_code: item.current_coupon_code || item.coupon_code,
             order_view_id: displayOrderId,
             gift_id: displayGiftId,
             userid: item.userid || '-',
@@ -102,19 +133,18 @@ function CouponQueryPage() {
             verify_poi_name: '',
             status: item.status,
             account_id: item.account_id,
-            order_db_id: item.order_id
+            order_db_id: item.order_id,
+            is_old_code: item.is_old_code || false,
+            code_changed: false,
+            change_type: 'none',
+            change_count: 0
           })
           continue
         }
 
-        // 3. 调用 Electron API 查询美团券码最新状态
         try {
-          // 通过位数判断订单号和礼物号
-          // 订单号通常是19位左右，礼物号通常是23位左右（超过20位视为礼物号）
           const idStr = String(item.order_view_id || '')
           const isGiftId = idStr.length > 20 || /^[a-zA-Z]/.test(idStr)
-
-          // 如果是礼物号，使用 gift_id 字段传递；否则使用 order_view_id
           const queryOrderId = isGiftId ? idStr : item.order_view_id
 
           const meituanResult = await window.electronAPI.rebateQueryOne({
@@ -126,29 +156,29 @@ function CouponQueryPage() {
               openIdCipher: item.open_id_cipher
             },
             orderId: queryOrderId,
-            isGiftId: isGiftId  // 标记是否为礼物号
+            isGiftId: isGiftId
           })
 
           if (meituanResult.success && meituanResult.data?.response?.data) {
             const coupons = meituanResult.data.response.data
-            // 找到匹配的券码
+            const actualCode = item.current_coupon_code || item.coupon_code
             const matchedCoupon = coupons.find(c =>
+              c.coupon === actualCode ||
+              c.encode === actualCode ||
+              c.coupon_code === actualCode ||
               c.coupon === item.coupon_code ||
-              c.encode === item.coupon_code ||
-              c.coupon_code === item.coupon_code
+              c.encode === item.coupon_code
             )
 
             if (matchedCoupon) {
-              // 直接使用后端返回的核销信息字段
               const verifyTime = matchedCoupon.verifyTime || ''
               const verifyPoiName = matchedCoupon.verifyPoiName || ''
-
-              // 根据判断结果，正确设置订单号和礼物号
               const displayOrderId = isGiftId ? '-' : (item.order_view_id || '-')
               const displayGiftId = isGiftId ? idStr : (item.gift_id || '-')
 
               allResults.push({
                 coupon_code: item.coupon_code,
+                current_coupon_code: item.current_coupon_code || matchedCoupon.coupon || item.coupon_code,
                 order_view_id: displayOrderId,
                 gift_id: displayGiftId,
                 userid: item.userid || '-',
@@ -158,16 +188,20 @@ function CouponQueryPage() {
                 verify_poi_name: verifyPoiName,
                 status: 'success',
                 account_id: item.account_id,
-                order_db_id: item.order_id
+                order_db_id: item.order_id,
+                is_old_code: item.is_old_code || false,
+                code_changed: false,
+                change_type: 'none',
+                change_count: item.change_info?.change_count || 0
               })
             } else {
-              // 券码列表中没有匹配的，调用后端接口获取数据库中的信息
               try {
                 const backendResponse = await couponsApi.queryBackend({ coupon_codes: [item.coupon_code] })
                 const backendResult = backendResponse.data?.[0]
                 if (backendResult && backendResult.status === 'found') {
                   allResults.push({
                     coupon_code: backendResult.coupon_code,
+                    current_coupon_code: backendResult.current_coupon_code || backendResult.coupon_code,
                     order_view_id: backendResult.order_view_id || '-',
                     gift_id: backendResult.gift_id || '-',
                     userid: backendResult.userid || '-',
@@ -176,11 +210,17 @@ function CouponQueryPage() {
                     verify_poi_name: backendResult.verify_poi_name || '',
                     status: 'backend',
                     account_id: item.account_id,
-                    order_db_id: item.order_id
+                    order_db_id: item.order_id,
+                    is_old_code: backendResult.is_old_code || false,
+                    code_changed: backendResult.code_changed || false,
+                    change_type: backendResult.change_type || 'none',
+                    old_coupon_code: backendResult.old_coupon_code,
+                    change_count: backendResult.change_count || 0
                   })
                 } else {
                   allResults.push({
                     coupon_code: item.coupon_code,
+                    current_coupon_code: item.current_coupon_code || item.coupon_code,
                     order_view_id: isGiftId ? '-' : (item.order_view_id || '-'),
                     gift_id: isGiftId ? idStr : (item.gift_id || '-'),
                     userid: item.userid || '-',
@@ -189,13 +229,18 @@ function CouponQueryPage() {
                     verify_poi_name: '',
                     status: 'partial',
                     account_id: item.account_id,
-                    order_db_id: item.order_id
+                    order_db_id: item.order_id,
+                    is_old_code: item.is_old_code || false,
+                    code_changed: false,
+                    change_type: 'none',
+                    change_count: 0
                   })
                 }
               } catch (backendError) {
                 console.error('Backend query error:', backendError)
                 allResults.push({
                   coupon_code: item.coupon_code,
+                  current_coupon_code: item.current_coupon_code || item.coupon_code,
                   order_view_id: isGiftId ? '-' : (item.order_view_id || '-'),
                   gift_id: isGiftId ? idStr : (item.gift_id || '-'),
                   userid: item.userid || '-',
@@ -204,18 +249,22 @@ function CouponQueryPage() {
                   verify_poi_name: '',
                   status: 'partial',
                   account_id: item.account_id,
-                  order_db_id: item.order_id
+                  order_db_id: item.order_id,
+                  is_old_code: item.is_old_code || false,
+                  code_changed: false,
+                  change_type: 'none',
+                  change_count: 0
                 })
               }
             }
           } else {
-            // Electron查询失败，调用后端接口获取数据库中的信息
             try {
               const backendResponse = await couponsApi.queryBackend({ coupon_codes: [item.coupon_code] })
               const backendResult = backendResponse.data?.[0]
               if (backendResult && backendResult.status === 'found') {
                 allResults.push({
                   coupon_code: backendResult.coupon_code,
+                  current_coupon_code: backendResult.current_coupon_code || backendResult.coupon_code,
                   order_view_id: backendResult.order_view_id || '-',
                   gift_id: backendResult.gift_id || '-',
                   userid: backendResult.userid || '-',
@@ -224,11 +273,17 @@ function CouponQueryPage() {
                   verify_poi_name: backendResult.verify_poi_name || '',
                   status: 'backend',
                   account_id: item.account_id,
-                  order_db_id: item.order_id
+                  order_db_id: item.order_id,
+                  is_old_code: backendResult.is_old_code || false,
+                  code_changed: backendResult.code_changed || false,
+                  change_type: backendResult.change_type || 'none',
+                  old_coupon_code: backendResult.old_coupon_code,
+                  change_count: backendResult.change_count || 0
                 })
               } else {
                 allResults.push({
                   coupon_code: item.coupon_code,
+                  current_coupon_code: item.current_coupon_code || item.coupon_code,
                   order_view_id: isGiftId ? '-' : (item.order_view_id || '-'),
                   gift_id: isGiftId ? idStr : (item.gift_id || '-'),
                   userid: item.userid || '-',
@@ -237,13 +292,18 @@ function CouponQueryPage() {
                   verify_poi_name: '',
                   status: 'error',
                   account_id: item.account_id,
-                  order_db_id: item.order_id
+                  order_db_id: item.order_id,
+                  is_old_code: item.is_old_code || false,
+                  code_changed: false,
+                  change_type: 'none',
+                  change_count: 0
                 })
               }
             } catch (backendError) {
               console.error('Backend query error:', backendError)
               allResults.push({
                 coupon_code: item.coupon_code,
+                current_coupon_code: item.current_coupon_code || item.coupon_code,
                 order_view_id: isGiftId ? '-' : (item.order_view_id || '-'),
                 gift_id: isGiftId ? idStr : (item.gift_id || '-'),
                 userid: item.userid || '-',
@@ -252,19 +312,23 @@ function CouponQueryPage() {
                 verify_poi_name: '',
                 status: 'error',
                 account_id: item.account_id,
-                order_db_id: item.order_id
+                order_db_id: item.order_id,
+                is_old_code: item.is_old_code || false,
+                code_changed: false,
+                change_type: 'none',
+                change_count: 0
               })
             }
           }
         } catch (error) {
           console.error('Query meituan error:', error)
-          // Electron查询异常，调用后端接口获取数据库中的信息
           try {
             const backendResponse = await couponsApi.queryBackend({ coupon_codes: [item.coupon_code] })
             const backendResult = backendResponse.data?.[0]
             if (backendResult && backendResult.status === 'found') {
               allResults.push({
                 coupon_code: backendResult.coupon_code,
+                current_coupon_code: backendResult.current_coupon_code || backendResult.coupon_code,
                 order_view_id: backendResult.order_view_id || '-',
                 gift_id: backendResult.gift_id || '-',
                 userid: backendResult.userid || '-',
@@ -273,11 +337,17 @@ function CouponQueryPage() {
                 verify_poi_name: backendResult.verify_poi_name || '',
                 status: 'backend',
                 account_id: item.account_id,
-                order_db_id: item.order_id
+                order_db_id: item.order_id,
+                is_old_code: backendResult.is_old_code || false,
+                code_changed: backendResult.code_changed || false,
+                change_type: backendResult.change_type || 'none',
+                old_coupon_code: backendResult.old_coupon_code,
+                change_count: backendResult.change_count || 0
               })
             } else {
               allResults.push({
                 coupon_code: item.coupon_code,
+                current_coupon_code: item.current_coupon_code || item.coupon_code,
                 order_view_id: isGiftId ? '-' : (item.order_view_id || '-'),
                 gift_id: isGiftId ? idStr : (item.gift_id || '-'),
                 userid: item.userid || '-',
@@ -286,13 +356,18 @@ function CouponQueryPage() {
                 verify_poi_name: '',
                 status: 'error',
                 account_id: item.account_id,
-                order_db_id: item.order_id
+                order_db_id: item.order_id,
+                is_old_code: item.is_old_code || false,
+                code_changed: false,
+                change_type: 'none',
+                change_count: 0
               })
             }
           } catch (backendError) {
             console.error('Backend query error:', backendError)
             allResults.push({
               coupon_code: item.coupon_code,
+              current_coupon_code: item.current_coupon_code || item.coupon_code,
               order_view_id: isGiftId ? '-' : (item.order_view_id || '-'),
               gift_id: isGiftId ? idStr : (item.gift_id || '-'),
               userid: item.userid || '-',
@@ -301,12 +376,15 @@ function CouponQueryPage() {
               verify_poi_name: '',
               status: 'error',
               account_id: item.account_id,
-              order_db_id: item.order_id
+              order_db_id: item.order_id,
+              is_old_code: item.is_old_code || false,
+              code_changed: false,
+              change_type: 'none',
+              change_count: 0
             })
           }
         }
 
-        // 请求间隔
         if (i < dbResults.length - 1) {
           await new Promise(resolve => setTimeout(resolve, 500))
         }
@@ -314,18 +392,17 @@ function CouponQueryPage() {
 
       setResults(allResults)
 
-      // 批量更新查询成功的券码状态到数据库
       const successResults = allResults.filter(r =>
         r.status === 'success' &&
         r.coupon_status &&
-        r.coupon_code
+        (r.current_coupon_code || r.coupon_code)
       )
 
       if (successResults.length > 0) {
         try {
           await couponsApi.batchUpdate({
             coupons: successResults.map(r => ({
-              coupon_code: r.coupon_code,
+              coupon_code: r.current_coupon_code || r.coupon_code,
               coupon_status: r.coupon_status,
               use_status: r.use_status
             }))
@@ -343,7 +420,6 @@ function CouponQueryPage() {
     }
   }
 
-  // 后端查询 - 直接从数据库获取券码信息
   const handleBackendQuery = async () => {
     const codes = couponCodes.split(/[\n,]/).map(c => c.trim()).filter(Boolean)
     if (!codes.length) {
@@ -360,13 +436,19 @@ function CouponQueryPage() {
 
       const allResults = backendResults.map(item => ({
         coupon_code: item.coupon_code,
+        current_coupon_code: item.current_coupon_code || item.coupon_code,
         order_view_id: item.order_view_id || '-',
         gift_id: item.gift_id || '-',
         userid: item.userid || '-',
         coupon_status: item.coupon_status || '-',
         verify_time: item.verify_time || '',
         verify_poi_name: item.verify_poi_name || '',
-        status: item.status
+        status: item.status,
+        is_old_code: item.is_old_code || false,
+        code_changed: item.code_changed || false,
+        change_type: item.change_type || 'none',
+        old_coupon_code: item.old_coupon_code,
+        change_count: item.change_count || 0
       }))
 
       setResults(allResults)
@@ -379,16 +461,20 @@ function CouponQueryPage() {
   }
 
   const handleExport = async () => {
-    const headers = ['券码', '订单号', '礼物号', 'USERID', '券码状态', '核销时间', '核销门店', '状态']
+    const headers = ['券码', '当前券码', '订单号', '礼物号', 'USERID', '券码状态', '核销时间', '核销门店', '状态', '变更状态', '旧券码', '变更次数']
     const rows = results.map(r => [
       r.coupon_code,
+      r.current_coupon_code || r.coupon_code,
       r.order_view_id || '',
       r.gift_id || '',
       r.userid || '',
       r.coupon_status || '',
       r.verify_time || '',
       r.verify_poi_name || '',
-      r.status
+      r.status,
+      getChangeTypeText(r.change_type),
+      r.old_coupon_code || '',
+      r.change_count || 0
     ])
 
     try {
@@ -411,7 +497,7 @@ function CouponQueryPage() {
   const getStatusColor = (status) => {
     switch (status) {
       case 'success':
-      case 'found':  // 后端查询成功也显示绿色
+      case 'found':
       case 'backend':
         return 'bg-green-100 text-green-800'
       case 'not_found': return 'bg-gray-100 text-gray-800'
@@ -424,9 +510,9 @@ function CouponQueryPage() {
   const getStatusText = (status) => {
     switch (status) {
       case 'success':
-      case 'found':  // 后端查询成功也显示"成功"
+      case 'found':
         return '成功'
-      case 'backend': return '成功'  // 数据库查询成功也显示"成功"
+      case 'backend': return '成功'
       case 'not_found': return '未找到'
       case 'partial': return '部分成功'
       case 'error': return '错误'
@@ -434,8 +520,37 @@ function CouponQueryPage() {
     }
   }
 
+  const getChangeTypeColor = (changeType, isOldCode) => {
+    if (isOldCode) {
+      return 'bg-blue-100 text-blue-800'
+    }
+    switch (changeType) {
+      case 'full': return 'bg-red-100 text-red-800'
+      case 'partial': return 'bg-yellow-100 text-yellow-800'
+      default: return 'bg-gray-100 text-gray-600'
+    }
+  }
+
+  const getChangeTypeText = (changeType) => {
+    switch (changeType) {
+      case 'full': return '全部变更'
+      case 'partial': return '部分变更'
+      default: return '-'
+    }
+  }
+
+  const formatDateTime = (dateStr) => {
+    if (!dateStr) return '-'
+    try {
+      return new Date(dateStr).toLocaleString('zh-CN')
+    } catch {
+      return dateStr
+    }
+  }
+
   return (
     <div className="h-full flex flex-col p-6">
+      {/* 工具栏 */}
       <div className="bg-white rounded-xl shadow-sm p-4 mb-4">
         <div className="flex gap-3 flex-wrap items-end">
           <div className="flex gap-2">
@@ -501,6 +616,7 @@ function CouponQueryPage() {
         </div>
       </div>
 
+      {/* 结果表格 */}
       <div className="flex-1 bg-white rounded-xl shadow-sm overflow-hidden">
         <div className="overflow-auto h-full">
           <table className="w-full">
@@ -513,14 +629,25 @@ function CouponQueryPage() {
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">券码状态</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">核销时间</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">核销门店</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">状态</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">查询状态</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">变更状态</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {results.map((result, index) => (
-                <tr key={index} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 text-sm text-gray-900 font-mono">{result.coupon_code}</td>
+                <tr key={index} className={`hover:bg-gray-50 ${result.is_old_code ? 'bg-blue-50' : ''}`}>
+                  <td className="px-4 py-3 text-sm text-gray-900 font-mono">
+                    <div className="flex items-center gap-2">
+                      <span>{result.coupon_code}</span>
+                      {result.is_old_code && (
+                        <span className="text-xs text-blue-600 flex items-center gap-1">
+                          <ArrowRight className="w-3 h-3" />
+                          {result.current_coupon_code}
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-4 py-3 text-sm text-gray-500 font-mono">{result.order_view_id || '-'}</td>
                   <td className="px-4 py-3 text-sm text-gray-500">{result.gift_id || '-'}</td>
                   <td className="px-4 py-3 text-sm text-gray-500 font-mono">{result.userid || '-'}</td>
@@ -541,19 +668,45 @@ function CouponQueryPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-sm">
-                    <button
-                      id={`copy-btn-${result.coupon_code}`}
-                      onClick={() => handleCopy(result)}
-                      className="px-3 py-1 text-xs bg-blue-50 text-blue-600 rounded hover:bg-blue-100 flex items-center gap-1"
-                    >
-                      <Copy className="w-3 h-3" /> 复制
-                    </button>
+                    <div className="flex flex-col gap-1">
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${getChangeTypeColor(result.change_type, result.is_old_code)}`}>
+                        {result.is_old_code ? '旧券码' : getChangeTypeText(result.change_type)}
+                      </span>
+                      {result.code_changed && result.old_coupon_code && (
+                        <span className="text-xs text-gray-500" title="原券码">
+                          原: {result.old_coupon_code}
+                        </span>
+                      )}
+                      {result.change_count > 0 && (
+                        <span className="text-xs text-gray-400">
+                          变更{result.change_count}次
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-sm">
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleShowDetail(result.coupon_code)}
+                        className="px-2 py-1 text-xs bg-purple-50 text-purple-600 rounded hover:bg-purple-100"
+                        title="查看详情"
+                      >
+                        详情
+                      </button>
+                      <button
+                        id={`copy-btn-${result.coupon_code}`}
+                        onClick={() => handleCopy(result)}
+                        className="px-2 py-1 text-xs bg-blue-50 text-blue-600 rounded hover:bg-blue-100"
+                      >
+                        复制
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
               {results.length === 0 && !loading && (
                 <tr>
-                  <td colSpan="9" className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan="10" className="px-4 py-8 text-center text-gray-500">
                     暂无查询结果，请输入券码并点击查询
                   </td>
                 </tr>
@@ -562,6 +715,211 @@ function CouponQueryPage() {
           </table>
         </div>
       </div>
+
+      {/* 详情弹窗 */}
+      {showDetail && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={handleCloseDetail}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden" onClick={e => e.stopPropagation()}>
+            {/* 弹窗头部 */}
+            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+              <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                <Info className="w-5 h-5 text-purple-500" />
+                券码详情
+              </h3>
+              <button onClick={handleCloseDetail} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* 弹窗内容 */}
+            <div className="p-6 overflow-y-auto max-h-[calc(90vh-120px)]">
+              {detailLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <RefreshCw className="w-8 h-8 animate-spin text-gray-400" />
+                  <span className="ml-2 text-gray-500">加载中...</span>
+                </div>
+              ) : detailData ? (
+                <div className="space-y-6">
+                  {/* 券码信息 */}
+                  <div className="bg-gray-50 rounded-lg p-4">
+                    <h4 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+                      <FileText className="w-4 h-4" />
+                      券码信息
+                    </h4>
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                      <div>
+                        <span className="text-gray-500">当前券码：</span>
+                        <span className="font-mono font-medium">{detailData.coupon?.coupon_code || '-'}</span>
+                        {detailData.is_old_code && (
+                          <span className="ml-2 px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded">旧券码查询</span>
+                        )}
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Encode：</span>
+                        <span className="font-mono">{detailData.coupon?.encode || '-'}</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500">券码状态：</span>
+                        <span className={`px-2 py-0.5 rounded text-xs ${
+                          detailData.coupon?.coupon_status === '待使用' ? 'bg-blue-100 text-blue-700' :
+                          detailData.coupon?.coupon_status === '已使用' ? 'bg-gray-200 text-gray-700' :
+                          'bg-gray-100 text-gray-600'
+                        }`}>
+                          {detailData.coupon?.coupon_status || '-'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500">礼物ID：</span>
+                        <span className="font-mono">{detailData.coupon?.gift_id || '-'}</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500">最后查询：</span>
+                        <span>{formatDateTime(detailData.coupon?.query_time)}</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500">创建时间：</span>
+                        <span>{formatDateTime(detailData.coupon?.created_at)}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 订单信息 */}
+                  {detailData.order && (
+                    <div className="bg-blue-50 rounded-lg p-4">
+                      <h4 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+                        <FileText className="w-4 h-4 text-blue-500" />
+                        订单信息
+                      </h4>
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <span className="text-gray-500">订单号：</span>
+                          <span className="font-mono">{detailData.order?.order_view_id || detailData.order?.order_id || '-'}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">标题：</span>
+                          <span className="truncate" title={detailData.order?.title}>{detailData.order?.title || '-'}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">订单金额：</span>
+                          <span className="text-orange-600 font-medium">¥{detailData.order?.order_amount || '-'}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">佣金：</span>
+                          <span className="text-green-600">¥{detailData.order?.commission_fee || '-'}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">券码数量：</span>
+                          <span>{detailData.order?.total_coupon_num || '-'}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">订单状态：</span>
+                          <span>{detailData.order?.showstatus || '-'}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">分类：</span>
+                          <span>{detailData.order?.catename || '-'}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">是否礼物：</span>
+                          <span>{detailData.order?.is_gift ? '是' : '否'}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">下单城市：</span>
+                          <span>{detailData.order?.city_name || '-'}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">支付时间：</span>
+                          <span>{formatDateTime(detailData.order?.order_pay_time)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 账号信息 */}
+                  {detailData.account && (
+                    <div className="bg-green-50 rounded-lg p-4">
+                      <h4 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+                        <User className="w-4 h-4 text-green-500" />
+                        账号信息
+                      </h4>
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <span className="text-gray-500">账号ID：</span>
+                          <span>{detailData.account?.id}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">备注：</span>
+                          <span>{detailData.account?.remark || '-'}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">MT UserID：</span>
+                          <span className="font-mono">{detailData.account?.userid || '-'}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">账号状态：</span>
+                          <span className={`px-2 py-0.5 rounded text-xs ${
+                            detailData.account?.status === 'normal' ? 'bg-green-100 text-green-700' :
+                            detailData.account?.status === 'invalid' ? 'bg-red-100 text-red-700' :
+                            'bg-yellow-100 text-yellow-700'
+                          }`}>
+                            {detailData.account?.status === 'normal' ? '正常' :
+                             detailData.account?.status === 'invalid' ? '失效' : '未检测'}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">最后检测：</span>
+                          <span>{formatDateTime(detailData.account?.last_check_time)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 变更历史 */}
+                  {detailData.change_history && detailData.change_history.length > 0 && (
+                    <div className="bg-orange-50 rounded-lg p-4">
+                      <h4 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+                        <Clock className="w-4 h-4 text-orange-500" />
+                        变更历史（共 {detailData.change_history.length} 次）
+                      </h4>
+                      <div className="space-y-2">
+                        {detailData.change_history.map((h, idx) => (
+                          <div key={h.id} className="flex items-center gap-3 text-sm bg-white rounded p-2">
+                            <span className="text-gray-400 text-xs w-6">#{idx + 1}</span>
+                            <span className="font-mono text-red-600">{h.old_coupon_code}</span>
+                            <ArrowRight className="w-4 h-4 text-gray-400" />
+                            <span className="font-mono text-green-600">{h.new_coupon_code}</span>
+                            <span className="text-gray-400 text-xs ml-auto">{formatDateTime(h.changed_at)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 无变更历史提示 */}
+                  {(!detailData.change_history || detailData.change_history.length === 0) && (
+                    <div className="bg-gray-50 rounded-lg p-4 text-center text-gray-500 text-sm">
+                      <AlertCircle className="w-5 h-5 mx-auto mb-2 text-gray-300" />
+                      暂无变更记录
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-center text-gray-500 py-12">暂无数据</div>
+              )}
+            </div>
+
+            {/* 弹窗底部 */}
+            <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end">
+              <button
+                onClick={handleCloseDetail}
+                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
