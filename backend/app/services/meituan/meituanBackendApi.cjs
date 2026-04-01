@@ -162,6 +162,62 @@ function getSignedUrl(url, data) {
 }
 
 /**
+ * 检查是否全部为占位券码 (000000000000)
+ */
+function isAllPlaceholderCoupons(couponsInfoList) {
+  if (!Array.isArray(couponsInfoList) || couponsInfoList.length === 0) {
+    return false
+  }
+  return couponsInfoList.every(c => {
+    const code = String(c?.coupon || '').replace(/\s/g, '')
+    return code === '000000000000'
+  })
+}
+
+/**
+ * 从响应中提取店铺位置信息 (lat/lng)
+ * 用于券码为000000000000时的自动重试
+ */
+function extractShopLocation(res) {
+  try {
+    const nodeDataMap = res?.data?.nodeDataMap || {}
+
+    // 尝试从 OrderDetailNoticeModule1.props.shopInfo 获取
+    let shopInfo = nodeDataMap.OrderDetailNoticeModule1?.props?.shopInfo
+    if (shopInfo?.lat && shopInfo?.lng) {
+      console.log(`[Backend API] 从OrderDetailNoticeModule1.shopInfo中提取到店铺位置: lat=${shopInfo.lat}, lng=${shopInfo.lng}`)
+      return { lat: String(shopInfo.lat), lng: String(shopInfo.lng) }
+    }
+
+    // 尝试从 OrderDetailPoi1.props.shopInfo 获取
+    shopInfo = nodeDataMap.OrderDetailPoi1?.props?.shopInfo
+    if (shopInfo?.lat && shopInfo?.lng) {
+      console.log(`[Backend API] 从OrderDetailPoi1.shopInfo中提取到店铺位置: lat=${shopInfo.lat}, lng=${shopInfo.lng}`)
+      return { lat: String(shopInfo.lat), lng: String(shopInfo.lng) }
+    }
+
+    // 尝试从 OrderDetailNavBar1.props.shopInfo 获取 (兼容旧版本)
+    shopInfo = nodeDataMap.OrderDetailNavBar1?.props?.shopInfo
+    if (shopInfo?.lat && shopInfo?.lng) {
+      console.log(`[Backend API] 从OrderDetailNavBar1.shopInfo中提取到店铺位置: lat=${shopInfo.lat}, lng=${shopInfo.lng}`)
+      return { lat: String(shopInfo.lat), lng: String(shopInfo.lng) }
+    }
+
+    // 尝试从 bizParams.extra 中获取
+    const bizParams = nodeDataMap.OrderDetailNavBar1?.props?.bizParams?.extra || {}
+    const poiLat = bizParams.lat || bizParams.poiLat
+    const poiLng = bizParams.lng || bizParams.poiLng
+    if (poiLat && poiLng) {
+      console.log(`[Backend API] 从bizParams中提取到店铺位置: lat=${poiLat}, lng=${poiLng}`)
+      return { lat: String(poiLat), lng: String(poiLng) }
+    }
+  } catch (e) {
+    console.error('[Backend API] 提取店铺位置失败:', e.message)
+  }
+  return null
+}
+
+/**
  * 获取订单券码信息
  */
 async function getCouponList(token, orderId, options = {}) {
@@ -312,6 +368,52 @@ async function getCouponList(token, orderId, options = {}) {
 
     // 解析响应
     const coupons = parseCouponResponse(response.data)
+
+    // 检查是否全部为占位券码 (000000000000)，如果是则尝试使用店铺位置重新查询
+    if (isAllPlaceholderCoupons(coupons) && !options._shopLocationRetried) {
+      console.error('[Backend API] 检测到全部券码为000000000000，尝试提取店铺位置重新查询...')
+
+      const extractedShopLocation = extractShopLocation(response.data)
+
+      if (extractedShopLocation && extractedShopLocation.lat && extractedShopLocation.lng) {
+        console.error(`[Backend API] 使用店铺位置重新查询: lat=${extractedShopLocation.lat}, lng=${extractedShopLocation.lng}`)
+
+        // 等待300ms后重试
+        await new Promise(r => setTimeout(r, 300))
+
+        // 使用店铺位置重新构建payload
+        const retryPayload = JSON.parse(JSON.stringify(payload))
+        retryPayload.pageQuery.lat = extractedShopLocation.lat
+        retryPayload.pageQuery.lng = extractedShopLocation.lng
+        retryPayload.pageQuery.latitude = extractedShopLocation.lat
+        retryPayload.pageQuery.longitude = extractedShopLocation.lng
+        retryPayload.commonParams.location.lat = parseFloat(extractedShopLocation.lat)
+        retryPayload.commonParams.location.lng = parseFloat(extractedShopLocation.lng)
+
+        const retryPayloadStr = JSON.stringify(retryPayload)
+        const retrySignedUrl = getSignedUrl(baseUrl, retryPayloadStr)
+
+        console.error(`[Backend API] 重新查询订单: ${orderIdStr}`)
+
+        const retryResponse = await axios.post(retrySignedUrl, retryPayload, { headers, timeout: 15000 })
+
+        console.error(`[Backend API] 重试响应状态: ${retryResponse.status}`)
+        console.error(`\n====== 美团接口重试响应 ======`)
+        console.error(JSON.stringify(retryResponse.data, null, 2))
+        console.error(`=============================\n`)
+
+        const retryCoupons = parseCouponResponse(retryResponse.data)
+
+        // 如果重试后获取到有效券码，返回重试结果
+        if (retryCoupons.length > 0 && !isAllPlaceholderCoupons(retryCoupons)) {
+          console.error('[Backend API] 使用店铺位置重新查询成功，获取到有效券码')
+          return { success: true, coupons: retryCoupons }
+        }
+        console.error('[Backend API] 使用店铺位置重新查询仍为占位券码，返回原始结果')
+      } else {
+        console.error('[Backend API] 未能从响应中提取到店铺位置信息')
+      }
+    }
 
     return { success: true, coupons }
   } catch (error) {
