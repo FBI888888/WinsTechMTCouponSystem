@@ -38,18 +38,15 @@ class ScheduledTaskService:
 
     def __init__(self):
         self.request_interval = settings.SCAN_REQUEST_INTERVAL
-        self.query_concurrency = max(1, settings.SCAN_COUPON_QUERY_CONCURRENCY)
-        self.query_batch_size = max(self.query_concurrency, settings.SCAN_COUPON_QUERY_BATCH_SIZE)
+        self.coupon_query_interval = settings.SCAN_COUPON_QUERY_INTERVAL
         self.node_path = settings.NODE_PATH or os.getenv("NODE_PATH", "node")
         base_dir = os.path.dirname(os.path.abspath(__file__))
         self.script_path = os.path.join(base_dir, "meituanBackendApi.cjs")
+        # 单 Node.js worker（单线程模式）
         self._node_workers = [
             {"process": None, "lock": asyncio.Lock(), "stderr_task": None}
-            for _ in range(self.query_concurrency)
         ]
         self._node_worker_pool_lock = asyncio.Lock()
-        self._node_worker_cursor = 0
-        self._node_worker_cursor_lock = asyncio.Lock()
         self._node_request_id = 0
 
     async def check_account_validity(self, account: MTAccount) -> bool:
@@ -370,56 +367,58 @@ class ScheduledTaskService:
         query_status, query_payload = await self.query_coupon_data(account, order)
         return self.save_coupon_query_result(db, account, query_status, query_payload)
 
-    def _iter_order_batches(self, orders: List[dict]) -> List[List[dict]]:
-        return [
-            orders[index:index + self.query_batch_size]
-            for index in range(0, len(orders), self.query_batch_size)
-        ]
+    @staticmethod
+    def _interleave(account_orders_map: dict) -> list:
+        """
+        将多账号订单列表交替合并。
+        {A: [a1, a2], B: [b1, b2, b3]} ->
+        [(A, a1), (B, b1), (A, a2), (B, b2), (B, b3)]
+        """
+        accounts = list(account_orders_map.keys())
+        lists = [account_orders_map[a] for a in accounts]
+        result = []
+        max_len = max((len(lst) for lst in lists), default=0)
+        for i in range(max_len):
+            for acc, lst in zip(accounts, lists):
+                if i < len(lst):
+                    result.append((acc, lst[i]))
+        return result
 
-    async def process_orders_with_pipeline(self, db: Session, account: MTAccount, orders: List[dict]) -> dict:
+    async def process_orders_single_thread(
+        self, db: Session, account: MTAccount, orders: List[dict]
+    ) -> dict:
+        """单线程顺序查询并保存一组订单的券码（供手动扫描单账号使用）"""
         consecutive_wind_control = 0
         max_consecutive_wind_control = 3
         saved_count = 0
         scan_details = []
         is_wind_control = False
 
-        if not orders:
-            return {
-                "coupons_saved": 0,
-                "scan_details": [],
-                "is_wind_control": False,
-            }
+        for order in orders:
+            query_status, query_payload = await self.query_coupon_data(account, order)
+            result, detail = self.save_coupon_query_result(db, account, query_status, query_payload)
 
-        for batch in self._iter_order_batches(orders):
-            batch_results = await asyncio.gather(
-                *(self.query_coupon_data(account, order) for order in batch)
-            )
+            if result == "success":
+                saved_count += 1
+                consecutive_wind_control = 0
+                if detail:
+                    scan_details.append(detail)
+            elif result == "wind_control":
+                consecutive_wind_control += 1
+                logger.warning(
+                    "[scan_single] account=%s consecutive_wind_control=%s order_id=%s",
+                    account.userid,
+                    consecutive_wind_control,
+                    self._extract_order_identity(order)[1],
+                )
+                if consecutive_wind_control >= max_consecutive_wind_control:
+                    is_wind_control = True
+                    break
+            else:
+                consecutive_wind_control = 0
 
-            for order, (query_status, query_payload) in zip(batch, batch_results):
-                result, detail = self.save_coupon_query_result(db, account, query_status, query_payload)
-                if result == "success":
-                    saved_count += 1
-                    consecutive_wind_control = 0
-                    if detail:
-                        scan_details.append(detail)
-                elif result == "wind_control":
-                    consecutive_wind_control += 1
-                    logger.warning(
-                        "[scan_pipeline] account=%s consecutive_wind_control=%s order_id=%s",
-                        account.userid,
-                        consecutive_wind_control,
-                        self._extract_order_identity(order)[1],
-                    )
-                    if consecutive_wind_control >= max_consecutive_wind_control:
-                        is_wind_control = True
-                        break
-                else:
-                    consecutive_wind_control = 0
-
-            if is_wind_control:
-                break
-
-            await asyncio.sleep(self.request_interval)
+            if not is_wind_control:
+                await asyncio.sleep(self.coupon_query_interval)
 
         return {
             "coupons_saved": saved_count,
@@ -473,10 +472,8 @@ class ScheduledTaskService:
             stderr_task.cancel()
 
     async def _pick_node_worker_index(self) -> int:
-        async with self._node_worker_cursor_lock:
-            worker_index = self._node_worker_cursor
-            self._node_worker_cursor = (self._node_worker_cursor + 1) % len(self._node_workers)
-            return worker_index
+        """始终返回唯一的 worker 0（单线程模式）"""
+        return 0
 
     async def _ensure_node_worker(self, worker_index: int):
         worker = self._node_workers[worker_index]
@@ -686,7 +683,7 @@ class ScheduledTaskService:
             logger.info(f"[扫描] 账号 {account.userid} 有 {len(new_orders)} 个新订单")
             stats["orders_found"] = len(new_orders)
 
-            pipeline_result = await self.process_orders_with_pipeline(db, account, new_orders)
+            pipeline_result = await self.process_orders_single_thread(db, account, new_orders)
             stats["coupons_saved"] += pipeline_result["coupons_saved"]
             scan_details.extend(pipeline_result["scan_details"])
             if pipeline_result["is_wind_control"]:
@@ -733,9 +730,9 @@ class ScheduledTaskService:
 
     async def run_scan_task(self, db: Session) -> dict:
         """
-        执行扫描任务
-        Returns:
-            任务结果统计
+        执行定时扫描任务（两阶段）：
+          Phase 1: 逐账号收集新订单（请求间隔 request_interval）
+          Phase 2: 交替轮询各账号券码（请求间隔 coupon_query_interval）
         """
         task_log = ScheduledTaskLog(
             task_name="scan_coupons",
@@ -751,47 +748,43 @@ class ScheduledTaskService:
             "orders_found": 0,
             "coupons_saved": 0,
             "errors": [],
-            "stopped_by_wind_control": False  # 是否因连续风控停止
+            "stopped_by_wind_control": False
         }
-        
-        # 收集扫描详情
         scan_details = []
 
-        # 追踪连续风控账号数
-        consecutive_wind_control_accounts = 0
-        MAX_CONSECUTIVE_WIND_CONTROL_ACCOUNTS = 3
-
+        # ------------------------------------------------------------------ #
+        # Phase 1: 收集所有账号的新订单（单线程，request_interval 间隔）       #
+        # ------------------------------------------------------------------ #
         try:
-            # 1. 获取所有有效且未被禁用的账号
             accounts = db.query(MTAccount).filter(
                 MTAccount.status == AccountStatus.NORMAL,
-                MTAccount.disabled == 0  # 只扫描未被禁用的账号
+                MTAccount.disabled == 0
             ).all()
 
-            logger.info(f"[定时任务] 开始扫描 {len(accounts)} 个账号")
+            logger.info(f"[定时任务] Phase 1: 开始收集 {len(accounts)} 个账号的新订单")
 
-            for account in accounts:
-                # 检查是否需要停止
+            account_orders_map: dict[MTAccount, list] = {}  # account -> [new_orders]
+            consecutive_wind_control_accounts = 0
+            MAX_CONSECUTIVE_WIND_CONTROL_ACCOUNTS = 3
+
+            for idx, account in enumerate(accounts):
+                # 连续风控检查
                 if consecutive_wind_control_accounts >= MAX_CONSECUTIVE_WIND_CONTROL_ACCOUNTS:
                     logger.warning(
-                        f"[定时任务] 连续{MAX_CONSECUTIVE_WIND_CONTROL_ACCOUNTS}个账号遇到风控，停止扫描任务"
+                        f"[定时任务] Phase 1: 连续{MAX_CONSECUTIVE_WIND_CONTROL_ACCOUNTS}个账号遇到风控，停止收集"
                     )
                     stats["stopped_by_wind_control"] = True
-
-                    # 发送微信通知 - 批量风控停止
                     try:
                         await send_wechat_notification(
-                            db,
-                            "batch_wind_control",
+                            db, "batch_wind_control",
                             count=MAX_CONSECUTIVE_WIND_CONTROL_ACCOUNTS
                         )
                     except Exception as notify_error:
                         logger.error(f"[定时任务] 发送批量风控通知失败: {notify_error}")
-
                     break
 
                 try:
-                    # 2. 检查账号有效性
+                    # 检查账号有效性
                     is_valid = await self.check_account_validity(account)
                     if not is_valid:
                         logger.warning(f"[定时任务] 账号 {account.userid} Token已失效")
@@ -799,74 +792,111 @@ class ScheduledTaskService:
                         account.last_check_time = datetime.now()
                         db.commit()
                         stats["accounts_invalid"] += 1
-                        consecutive_wind_control_accounts = 0  # 非风控失败重置计数
-
-                        # 发送微信通知 - 账号失效
+                        consecutive_wind_control_accounts = 0
                         try:
                             await send_wechat_notification(
-                                db,
-                                "invalid",
+                                db, "invalid",
                                 remark=account.remark or "未设置",
                                 userid=account.userid
                             )
                         except Exception as notify_error:
                             logger.error(f"[定时任务] 发送账号失效通知失败: {notify_error}")
-
                         continue
 
                     stats["accounts_scanned"] += 1
 
-                    # 3. 获取待使用订单
+                    # 获取待使用订单
                     orders, is_wind_control = await self.get_pending_orders(account)
                     if is_wind_control:
                         consecutive_wind_control_accounts += 1
                         logger.warning(
-                            f"[定时任务] 账号 {account.userid} 获取订单遇到风控 "
+                            f"[定时任务] Phase 1: 账号 {account.userid} 获取订单遇到风控 "
                             f"(连续{consecutive_wind_control_accounts}个账号风控)"
                         )
-
-                        # 发送微信通知 - 账号风控
                         try:
                             await send_wechat_notification(
-                                db,
-                                "wind_control",
+                                db, "wind_control",
                                 remark=account.remark or "未设置",
                                 userid=account.userid
                             )
                         except Exception as notify_error:
                             logger.error(f"[定时任务] 发送账号风控通知失败: {notify_error}")
-
-                        continue
-
-                    # 获取订单成功，重置风控计数
-                    consecutive_wind_control_accounts = 0
-                    logger.info(f"[定时任务] 账号 {account.userid} 获取到 {len(orders)} 个待使用订单")
-
-                    # 4. 筛选未落库订单
-                    new_orders = self.filter_new_orders(db, account, orders)
-                    logger.info(f"[定时任务] 账号 {account.userid} 有 {len(new_orders)} 个新订单")
-                    stats["orders_found"] += len(new_orders)
-
-                    pipeline_result = await self.process_orders_with_pipeline(db, account, new_orders)
-                    stats["coupons_saved"] += pipeline_result["coupons_saved"]
-                    scan_details.extend(pipeline_result["scan_details"])
-                    if pipeline_result["is_wind_control"]:
-                        logger.warning(
-                            f"[定时任务] 账号 {account.userid} 连续3个订单遇到风控，跳过剩余订单"
+                        account_orders_map[account] = []
+                    else:
+                        consecutive_wind_control_accounts = 0
+                        new_orders = self.filter_new_orders(db, account, orders)
+                        logger.info(
+                            f"[定时任务] Phase 1: 账号 {account.userid} "
+                            f"获取到 {len(orders)} 个待使用订单，其中 {len(new_orders)} 个新订单"
                         )
-                        consecutive_wind_control_accounts += 1
+                        stats["orders_found"] += len(new_orders)
+                        account_orders_map[account] = new_orders
 
-                    # 更新账号检查时间
+                except Exception as e:
+                    logger.error(f"[定时任务] Phase 1: 处理账号 {account.userid} 出错: {e}")
+                    stats["errors"].append({"account": account.userid, "error": str(e)})
+                    consecutive_wind_control_accounts = 0
+                    account_orders_map[account] = []
+
+                # 账号间间隔（仅非最后一个账号）
+                if idx < len(accounts) - 1:
+                    await asyncio.sleep(self.request_interval)
+
+            # ------------------------------------------------------------------ #
+            # Phase 2: 交替轮询券码（单线程，coupon_query_interval 间隔）          #
+            # ------------------------------------------------------------------ #
+            interleaved = self._interleave(account_orders_map)
+            total_orders = len(interleaved)
+            logger.info(f"[定时任务] Phase 2: 开始交替查询券码，共 {total_orders} 个订单")
+
+            consecutive_wc = 0
+            MAX_CONSECUTIVE_WC = 3
+
+            for q_idx, (account, order) in enumerate(interleaved):
+                if consecutive_wc >= MAX_CONSECUTIVE_WC:
+                    logger.warning(
+                        f"[定时任务] Phase 2: 连续{MAX_CONSECUTIVE_WC}次风控，停止查询"
+                    )
+                    stats["stopped_by_wind_control"] = True
+                    break
+
+                try:
+                    order_view_id = self._extract_order_identity(order)[1]
+                    logger.info(
+                        f"[定时任务] Phase 2: [{q_idx + 1}/{total_orders}] "
+                        f"账号 {account.userid} 查询订单 {order_view_id}"
+                    )
+                    query_status, query_payload = await self.query_coupon_data(account, order)
+                    result, detail = self.save_coupon_query_result(db, account, query_status, query_payload)
+
+                    if result == "success":
+                        stats["coupons_saved"] += 1
+                        consecutive_wc = 0
+                        if detail:
+                            scan_details.append(detail)
+                    elif result == "wind_control":
+                        consecutive_wc += 1
+                        logger.warning(
+                            f"[定时任务] Phase 2: 账号 {account.userid} 订单 {order_view_id} 风控 "
+                            f"(连续{consecutive_wc}次)"
+                        )
+                    else:
+                        consecutive_wc = 0
+
+                    # 更新账号最后扫描时间
                     account.last_check_time = datetime.now()
                     db.commit()
 
                 except Exception as e:
-                    logger.error(f"[定时任务] 处理账号 {account.userid} 出错: {e}")
+                    logger.error(
+                        f"[定时任务] Phase 2: 账号 {account.userid} 查询订单出错: {e}"
+                    )
                     stats["errors"].append({"account": account.userid, "error": str(e)})
-                    consecutive_wind_control_accounts = 0  # 异常情况重置风控计数
+                    consecutive_wc = 0
 
-                # 账号间间隔
-                await asyncio.sleep(self.request_interval)
+                # 券码间间隔（仅非最后一个）
+                if q_idx < total_orders - 1:
+                    await asyncio.sleep(self.coupon_query_interval)
 
             # 更新任务日志
             task_log.status = "success"
@@ -876,11 +906,11 @@ class ScheduledTaskService:
             task_log.finished_at = datetime.now()
             task_log.duration_seconds = int((task_log.finished_at - task_log.started_at).total_seconds())
             if stats["stopped_by_wind_control"]:
-                task_log.error_message = f"因连续{MAX_CONSECUTIVE_WIND_CONTROL_ACCOUNTS}个账号遇到风控而停止"
-            # 保存扫描详情
+                task_log.error_message = f"因连续风控停止"
             if scan_details:
                 task_log.scan_details = json.dumps(scan_details, ensure_ascii=False)
             db.commit()
+
             from app.routers.orders import invalidate_order_list_count_cache
             from app.routers.stats import invalidate_dashboard_stats_cache
             invalidate_order_list_count_cache()

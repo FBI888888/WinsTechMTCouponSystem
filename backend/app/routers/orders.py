@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import threading
 import time
 from typing import List, Optional
@@ -432,10 +432,17 @@ def get_pending_coupon_query_orders(
     if has_more:
         orders = orders[:limit]
 
+    # 获取真实总数（仅在 has_more 时才需要额外计数，否则 returned_count 即真实总数）
+    if has_more:
+        total_count = query.order_by(None).count()
+    else:
+        total_count = len(orders)
+
     response = {
         "returned_count": len(orders),
         "has_more": has_more,
-        "total": len(orders) + (1 if has_more else 0),
+        "total_count": total_count,
+        "total": total_count,  # 兼容旧字段名
         "items": [
             {
                 "id": o.id,
@@ -448,7 +455,7 @@ def get_pending_coupon_query_orders(
 
     duration_ms = (time.perf_counter() - started_at) * 1000
     logger.info(
-        "[P0][pending_coupon_query] account_id=%s status_filter=%s limit=%s returned_count=%s has_more=%s duration_ms=%.2f",
+        "[P0][pending_coupon_query] account_id=%s status_filter=%s limit=%s returned_count=%s has_more=%s total_count=%s duration_ms=%.2f",
         account_id,
         status_filter,
         limit,

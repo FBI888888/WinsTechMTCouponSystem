@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { ordersApi, accountsApi } from '../api'
 import { Download, Search, Database, ChevronLeft, ChevronRight, Gift } from 'lucide-react'
 import { useDataStore } from '../stores/dataStore'
@@ -507,13 +507,15 @@ function OrderListPage() {
 
         if (Array.isArray(orderInfo)) {
           for (const info of orderInfo) {
-            // 优先匹配带 ￥/¥ 符号的金额（如 "￥39.90" 或 "¥39.90"）
-            const currencyMatch = info.match(/[￥¥]([0-9]+(?:\.[0-9]+)?)/)
-            if (currencyMatch) {
-              amount = parseFloat(currencyMatch[1]) || 0
-            }
-            // 其次匹配小数格式的数字（更可能是金额，如 "39.90"）
             if (!amount) {
+              // 优先匹配带 ￥/¥ 符号后跟含小数点金额（如 "￥39.90" "¥39.90"），过滤 ¥1折/¥1张 等整数干扰
+              const currencyMatch = info.match(/[￥¥]([0-9]+\.[0-9]+)/)
+              if (currencyMatch) {
+                amount = parseFloat(currencyMatch[1]) || 0
+              }
+            }
+            if (!amount) {
+              // 其次匹配纯小数格式（如 "39.90"）
               const decimalMatch = info.match(/([0-9]+\.[0-9]+)/)
               if (decimalMatch) {
                 amount = parseFloat(decimalMatch[1]) || 0
@@ -524,6 +526,8 @@ function OrderListPage() {
             if (timeMatch) {
               payTime = timeMatch[1]
             }
+            // 金额和时间都已匹配到则提前退出
+            if (amount && payTime) break
           }
         }
 
@@ -726,7 +730,7 @@ function OrderListPage() {
     const failOrderIds = []
 
     try {
-      const MAX_SCAN_COUNT = 1000
+      const MAX_SCAN_COUNT = 500
       const response = await ordersApi.getPendingCouponQuery({
         account_id: selectedAccountId,
         status_filter: statusFilter && statusFilter !== '0' ? parseInt(statusFilter) : undefined,
@@ -737,6 +741,7 @@ function OrderListPage() {
 
       const ordersToQuery = response.data?.items || []
       const returnedCount = response.data?.returned_count || ordersToQuery.length
+      const totalCount = response.data?.total_count || response.data?.total || returnedCount
       const hasMore = Boolean(response.data?.has_more)
 
       if (ordersToQuery.length === 0) {
@@ -747,7 +752,7 @@ function OrderListPage() {
 
       setOrderQueryProgress({
         current: 0,
-        total: returnedCount,
+        total: totalCount,
         message: hasMore
           ? `Fetched ${returnedCount} pending orders for this batch. More orders remain for later scans.`
           : `Fetched ${returnedCount} pending orders.`
@@ -764,7 +769,7 @@ function OrderListPage() {
           current: i,
           total: returnedCount,
           message: hasMore
-            ? `正在查询 ${i + 1}-${Math.min(i + CONCURRENCY, returnedCount)}/${returnedCount}，后续还有更多订单...`
+            ? `正在查询 ${i + 1}-${Math.min(i + CONCURRENCY, returnedCount)}/${returnedCount}，共剩余 ${totalCount} 条待扫描...`
             : `正在查询 ${i + 1}-${Math.min(i + CONCURRENCY, returnedCount)}/${returnedCount}...`
         })
 
@@ -843,8 +848,8 @@ function OrderListPage() {
       }
 
       setOrderQueryProgress({
-        current: returnedCount,
-        total: returnedCount,
+        current: totalCount,
+        total: totalCount,
         message: hasMore
           ? `本批完成: ${formatCountSummary([{ label: '成功', count: successCount }, { label: '失败', count: failCount }])}。仍有剩余订单待下次处理。`
           : `查询完成: ${formatCountSummary([{ label: '成功', count: successCount }, { label: '失败', count: failCount }])}`

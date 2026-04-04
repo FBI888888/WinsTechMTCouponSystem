@@ -213,8 +213,13 @@ async def rate_limit_middleware(request: Request, call_next):
         response = await call_next(request)
         return response
 
-    # 排除内部操作接口（如批量查询订单）
-    if "/pending-coupon-query" in request.url.path:
+    # 排除内部操作接口（批量写入 / 长耗时查询，不做速率限制）
+    INTERNAL_PATH_KEYWORDS = [
+        "/pending-coupon-query",
+        "/save-coupon",
+        "/orders/save",
+    ]
+    if any(kw in request.url.path for kw in INTERNAL_PATH_KEYWORDS):
         response = await call_next(request)
         process_time = (time.time() - start_time) * 1000
         logger.debug(f"{request.method} {request.url.path} - {process_time:.2f}ms")
