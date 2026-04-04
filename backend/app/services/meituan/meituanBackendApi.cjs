@@ -4,9 +4,26 @@
  */
 
 const axios = require('axios')
+const http = require('http')
+const https = require('https')
 const path = require('path')
 const fs = require('fs')
 const vm = require('vm')
+const readline = require('readline')
+
+const BACKEND_API_DEBUG = process.env.MEITUAN_BACKEND_DEBUG === '1'
+
+function debugLog(...args) {
+  if (BACKEND_API_DEBUG) {
+    console.error(...args)
+  }
+}
+
+const axiosClient = axios.create({
+  timeout: 15000,
+  httpAgent: new http.Agent({ keepAlive: true, maxSockets: 10 }),
+  httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 10 })
+})
 
 // 加载 H5guard.js
 let h5guardContext = null
@@ -185,21 +202,21 @@ function extractShopLocation(res) {
     // 尝试从 OrderDetailNoticeModule1.props.shopInfo 获取
     let shopInfo = nodeDataMap.OrderDetailNoticeModule1?.props?.shopInfo
     if (shopInfo?.lat && shopInfo?.lng) {
-      console.log(`[Backend API] 从OrderDetailNoticeModule1.shopInfo中提取到店铺位置: lat=${shopInfo.lat}, lng=${shopInfo.lng}`)
+      debugLog(`[Backend API] 从OrderDetailNoticeModule1.shopInfo中提取到店铺位置: lat=${shopInfo.lat}, lng=${shopInfo.lng}`)
       return { lat: String(shopInfo.lat), lng: String(shopInfo.lng) }
     }
 
     // 尝试从 OrderDetailPoi1.props.shopInfo 获取
     shopInfo = nodeDataMap.OrderDetailPoi1?.props?.shopInfo
     if (shopInfo?.lat && shopInfo?.lng) {
-      console.log(`[Backend API] 从OrderDetailPoi1.shopInfo中提取到店铺位置: lat=${shopInfo.lat}, lng=${shopInfo.lng}`)
+      debugLog(`[Backend API] 从OrderDetailPoi1.shopInfo中提取到店铺位置: lat=${shopInfo.lat}, lng=${shopInfo.lng}`)
       return { lat: String(shopInfo.lat), lng: String(shopInfo.lng) }
     }
 
     // 尝试从 OrderDetailNavBar1.props.shopInfo 获取 (兼容旧版本)
     shopInfo = nodeDataMap.OrderDetailNavBar1?.props?.shopInfo
     if (shopInfo?.lat && shopInfo?.lng) {
-      console.log(`[Backend API] 从OrderDetailNavBar1.shopInfo中提取到店铺位置: lat=${shopInfo.lat}, lng=${shopInfo.lng}`)
+      debugLog(`[Backend API] 从OrderDetailNavBar1.shopInfo中提取到店铺位置: lat=${shopInfo.lat}, lng=${shopInfo.lng}`)
       return { lat: String(shopInfo.lat), lng: String(shopInfo.lng) }
     }
 
@@ -208,7 +225,7 @@ function extractShopLocation(res) {
     const poiLat = bizParams.lat || bizParams.poiLat
     const poiLng = bizParams.lng || bizParams.poiLng
     if (poiLat && poiLng) {
-      console.log(`[Backend API] 从bizParams中提取到店铺位置: lat=${poiLat}, lng=${poiLng}`)
+      debugLog(`[Backend API] 从bizParams中提取到店铺位置: lat=${poiLat}, lng=${poiLng}`)
       return { lat: String(poiLat), lng: String(poiLng) }
     }
   } catch (e) {
@@ -355,28 +372,28 @@ async function getCouponList(token, orderId, options = {}) {
     const payloadStr = JSON.stringify(payload)
     const signedUrl = getSignedUrl(baseUrl, payloadStr)
 
-    console.error(`[Backend API] Querying order: ${orderIdStr}, isGift: ${isGift}`)
+    debugLog(`[Backend API] Querying order: ${orderIdStr}, isGift: ${isGift}`)
 
-    const response = await axios.post(signedUrl, payload, { headers, timeout: 15000 })
+    const response = await axiosClient.post(signedUrl, payload, { headers })
 
-    console.error(`[Backend API] Response status: ${response.status}`)
-    console.error(`[Backend API] Response data keys: ${Object.keys(response.data || {})}`)
-    console.error(`[Backend API] nodeDataMap keys: ${Object.keys(response.data?.data?.nodeDataMap || {}).join(', ')}`)
-    console.error(`\n====== 美团接口原始响应 ======`)
-    console.error(JSON.stringify(response.data, null, 2))
-    console.error(`=============================\n`)
+    debugLog(`[Backend API] Response status: ${response.status}`)
+    debugLog(`[Backend API] Response data keys: ${Object.keys(response.data || {})}`)
+    debugLog(`[Backend API] nodeDataMap keys: ${Object.keys(response.data?.data?.nodeDataMap || {}).join(', ')}`)
+    debugLog(`\n====== 美团接口原始响应 ======`)
+    debugLog(JSON.stringify(response.data, null, 2))
+    debugLog(`=============================\n`)
 
     // 解析响应
     const coupons = parseCouponResponse(response.data)
 
     // 检查是否全部为占位券码 (000000000000)，如果是则尝试使用店铺位置重新查询
     if (isAllPlaceholderCoupons(coupons) && !options._shopLocationRetried) {
-      console.error('[Backend API] 检测到全部券码为000000000000，尝试提取店铺位置重新查询...')
+      debugLog('[Backend API] 检测到全部券码为000000000000，尝试提取店铺位置重新查询...')
 
       const extractedShopLocation = extractShopLocation(response.data)
 
       if (extractedShopLocation && extractedShopLocation.lat && extractedShopLocation.lng) {
-        console.error(`[Backend API] 使用店铺位置重新查询: lat=${extractedShopLocation.lat}, lng=${extractedShopLocation.lng}`)
+        debugLog(`[Backend API] 使用店铺位置重新查询: lat=${extractedShopLocation.lat}, lng=${extractedShopLocation.lng}`)
 
         // 等待300ms后重试
         await new Promise(r => setTimeout(r, 300))
@@ -393,25 +410,25 @@ async function getCouponList(token, orderId, options = {}) {
         const retryPayloadStr = JSON.stringify(retryPayload)
         const retrySignedUrl = getSignedUrl(baseUrl, retryPayloadStr)
 
-        console.error(`[Backend API] 重新查询订单: ${orderIdStr}`)
+        debugLog(`[Backend API] 重新查询订单: ${orderIdStr}`)
 
-        const retryResponse = await axios.post(retrySignedUrl, retryPayload, { headers, timeout: 15000 })
+        const retryResponse = await axiosClient.post(retrySignedUrl, retryPayload, { headers })
 
-        console.error(`[Backend API] 重试响应状态: ${retryResponse.status}`)
-        console.error(`\n====== 美团接口重试响应 ======`)
-        console.error(JSON.stringify(retryResponse.data, null, 2))
-        console.error(`=============================\n`)
+        debugLog(`[Backend API] 重试响应状态: ${retryResponse.status}`)
+        debugLog(`\n====== 美团接口重试响应 ======`)
+        debugLog(JSON.stringify(retryResponse.data, null, 2))
+        debugLog(`=============================\n`)
 
         const retryCoupons = parseCouponResponse(retryResponse.data)
 
         // 如果重试后获取到有效券码，返回重试结果
         if (retryCoupons.length > 0 && !isAllPlaceholderCoupons(retryCoupons)) {
-          console.error('[Backend API] 使用店铺位置重新查询成功，获取到有效券码')
+          debugLog('[Backend API] 使用店铺位置重新查询成功，获取到有效券码')
           return { success: true, coupons: retryCoupons }
         }
-        console.error('[Backend API] 使用店铺位置重新查询仍为占位券码，返回原始结果')
+        debugLog('[Backend API] 使用店铺位置重新查询仍为占位券码，返回原始结果')
       } else {
-        console.error('[Backend API] 未能从响应中提取到店铺位置信息')
+        debugLog('[Backend API] 未能从响应中提取到店铺位置信息')
       }
     }
 
@@ -504,27 +521,64 @@ function parseCouponResponse(res) {
 }
 
 // 主入口
+async function handleAction(action, params) {
+  switch (action) {
+    case 'getCouponList':
+      return await getCouponList(params.token, params.orderId, params.options || {})
+    default:
+      return { success: false, error: `Unknown action: ${action}` }
+  }
+}
+
+async function runWorker() {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    crlfDelay: Infinity
+  })
+
+  for await (const line of rl) {
+    const trimmed = String(line || '').trim()
+    if (!trimmed) {
+      continue
+    }
+
+    let response
+    try {
+      const request = JSON.parse(trimmed)
+      const result = await handleAction(request.action, request.params || {})
+      response = {
+        request_id: request.request_id ?? null,
+        result
+      }
+    } catch (error) {
+      response = {
+        request_id: null,
+        result: { success: false, error: error.message }
+      }
+    }
+
+    process.stdout.write(`${JSON.stringify(response)}\n`)
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2)
+  const action = args[0]
+
+  if (action === 'serve') {
+    await runWorker()
+    return
+  }
+
   if (args.length < 2) {
     console.log(JSON.stringify({ success: false, error: 'Usage: node meituanBackendApi.cjs <action> <args_json>' }))
     process.exit(1)
   }
 
-  const action = args[0]
   const params = JSON.parse(args[1])
 
   try {
-    let result
-
-    switch (action) {
-      case 'getCouponList':
-        result = await getCouponList(params.token, params.orderId, params.options || {})
-        break
-      default:
-        result = { success: false, error: `Unknown action: ${action}` }
-    }
-
+    const result = await handleAction(action, params)
     console.log(JSON.stringify(result))
   } catch (error) {
     console.log(JSON.stringify({ success: false, error: error.message }))

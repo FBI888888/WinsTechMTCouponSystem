@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { usersApi } from '../api'
 import { Plus, Trash2, Edit, RefreshCw } from 'lucide-react'
 import { useDataStore } from '../stores/dataStore'
 import { useToastStore } from '../stores/toastStore'
 import { confirm } from '../stores/confirmStore'
+import { getErrorMessage, isAbortError } from '../utils/requestFeedback'
 
 function UserPage() {
   // 全局缓存
@@ -14,22 +15,40 @@ function UserPage() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editingUser, setEditingUser] = useState(null)
   const [formData, setFormData] = useState({ username: '', password: '', role: 'user' })
+  const usersRequestIdRef = useRef(0)
+  const usersAbortControllerRef = useRef(null)
 
   const loadUsers = async (forceRefresh = false) => {
     if (usersLoaded && !forceRefresh) return
+    const requestId = ++usersRequestIdRef.current
+    usersAbortControllerRef.current?.abort()
+    const abortController = new AbortController()
+    usersAbortControllerRef.current = abortController
     setLoading(true)
     try {
-      const response = await usersApi.getAll()
+      const response = await usersApi.getAll(undefined, { signal: abortController.signal })
+      if (requestId !== usersRequestIdRef.current) return
       setUsers(response.data)
     } catch (error) {
+      if (isAbortError(error)) return
+      if (requestId !== usersRequestIdRef.current) return
       console.error('Failed to load users:', error)
     } finally {
-      setLoading(false)
+      if (usersAbortControllerRef.current === abortController) {
+        usersAbortControllerRef.current = null
+      }
+      if (requestId === usersRequestIdRef.current) {
+        setLoading(false)
+      }
     }
   }
 
   useEffect(() => {
     loadUsers()
+    return () => {
+      usersAbortControllerRef.current?.abort()
+      usersRequestIdRef.current += 1
+    }
   }, [])
 
   const handleCreate = async () => {
@@ -45,7 +64,7 @@ function UserPage() {
       setFormData({ username: '', password: '', role: 'user' })
       toast.success('创建成功')
     } catch (error) {
-      toast.error('创建失败: ' + error.message)
+      toast.error('创建失败: ' + getErrorMessage(error, '未知错误'))
     }
   }
 
@@ -67,7 +86,7 @@ function UserPage() {
       setFormData({ username: '', password: '', role: 'user' })
       toast.success('更新成功')
     } catch (error) {
-      toast.error('更新失败: ' + error.message)
+      toast.error('更新失败: ' + getErrorMessage(error, '未知错误'))
     }
   }
 
@@ -82,7 +101,7 @@ function UserPage() {
       await loadUsers(true)
       toast.success('删除成功')
     } catch (error) {
-      toast.error('删除失败: ' + error.message)
+      toast.error('删除失败: ' + getErrorMessage(error, '未知错误'))
     }
   }
 
@@ -91,7 +110,7 @@ function UserPage() {
       await usersApi.toggleActive(user.id)
       await loadUsers(true)
     } catch (error) {
-      toast.error('操作失败: ' + error.message)
+      toast.error('操作失败: ' + getErrorMessage(error, '未知错误'))
     }
   }
 

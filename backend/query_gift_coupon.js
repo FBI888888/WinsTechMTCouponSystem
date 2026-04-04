@@ -12,7 +12,7 @@ const fs = require('fs')
 const vm = require('vm')
 
 // ====== 你自己填写 ======
-const TOKEN = 'AgE8IxcqrfOqfKicX8NxGw-j6VHPYuEzd9-MWkfsOdWWxL4xddhm6EXxARQBq8cNMJtskfH7PQDk3gAAAAAnMwAAmu7y_L1n42FHlWLRp9lcRHfzMXeOd00ofIlne_gbioOiG05Cv_IAaVCgDeUye8C_'
+const TOKEN = 'AgHrJI7BeI9nlx55P82_3hK-3oU64ifxubiO6YLNHLArHvcqSYnGYUj-_XlowpfZbMTKQeZ8Oc6E9AAAAACsMwAAVrYv1ZMwTGZijB703pfh_oxg9SgcHNnFZNVAo3heS0gn10DUNUw3_w8vYS_lz8Yk'
 const USERID = '4360236367'
 const GIFT_ID = '19854399936561773906657'
 // ======================

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { logsApi } from '../api'
 import { useDataStore } from '../stores/dataStore'
 import { ChevronLeft, ChevronRight, Eye, X } from 'lucide-react'
@@ -20,11 +20,24 @@ function LogPage() {
   const [selectedTask, setSelectedTask] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [scanDetails, setScanDetails] = useState([])
+  const logsRequestIdRef = useRef(0)
+  const logsAbortControllerRef = useRef(null)
+  const detailRequestIdRef = useRef(0)
+  const detailAbortControllerRef = useRef(null)
+
+  const isAbortError = (error) =>
+    error?.code === 'ERR_CANCELED' ||
+    error?.name === 'CanceledError' ||
+    error?.name === 'AbortError'
 
   const loadLogs = useCallback(async (forceRefresh = false) => {
     // 如果已加载且不强制刷新且tab没变且页码没变，直接返回
     if (logsLoaded && !forceRefresh && logsTab === activeTab && logsPage === currentPage) return
 
+    const requestId = ++logsRequestIdRef.current
+    logsAbortControllerRef.current?.abort()
+    const abortController = new AbortController()
+    logsAbortControllerRef.current = abortController
     setLoading(true)
     try {
       let api
@@ -40,18 +53,35 @@ function LogPage() {
       const response = await api({
         skip: (currentPage - 1) * pageSize,
         limit: pageSize
-      })
+      }, { signal: abortController.signal })
+      if (requestId !== logsRequestIdRef.current) return
       setLogs(response.data.items || [], response.data.total || 0, currentPage, pageSize, activeTab)
     } catch (error) {
+      if (isAbortError(error)) return
+      if (requestId !== logsRequestIdRef.current) return
       console.error('Failed to load logs:', error)
     } finally {
-      setLoading(false)
+      if (logsAbortControllerRef.current === abortController) {
+        logsAbortControllerRef.current = null
+      }
+      if (requestId === logsRequestIdRef.current) {
+        setLoading(false)
+      }
     }
   }, [activeTab, currentPage, pageSize, logsLoaded, logsTab, logsPage, setLogs])
 
   useEffect(() => {
     loadLogs()
   }, [loadLogs])
+
+  useEffect(() => {
+    return () => {
+      logsAbortControllerRef.current?.abort()
+      detailAbortControllerRef.current?.abort()
+      logsRequestIdRef.current += 1
+      detailRequestIdRef.current += 1
+    }
+  }, [])
 
   // 切换tab时重置页码
   const handleTabChange = (tab) => {
@@ -86,18 +116,30 @@ function LogPage() {
 
   // 查看任务详情
   const handleViewDetail = async (taskId) => {
+    const requestId = ++detailRequestIdRef.current
+    detailAbortControllerRef.current?.abort()
+    const abortController = new AbortController()
+    detailAbortControllerRef.current = abortController
     setDetailLoading(true)
     setShowDetailModal(true)
     try {
-      const response = await logsApi.getScheduledTaskDetail(taskId)
+      const response = await logsApi.getScheduledTaskDetail(taskId, { signal: abortController.signal })
+      if (requestId !== detailRequestIdRef.current) return
       if (response.data.success) {
         setSelectedTask(response.data.data)
         setScanDetails(response.data.data.scan_details || [])
       }
     } catch (error) {
+      if (isAbortError(error)) return
+      if (requestId !== detailRequestIdRef.current) return
       console.error('Failed to load task detail:', error)
     } finally {
-      setDetailLoading(false)
+      if (detailAbortControllerRef.current === abortController) {
+        detailAbortControllerRef.current = null
+      }
+      if (requestId === detailRequestIdRef.current) {
+        setDetailLoading(false)
+      }
     }
   }
 

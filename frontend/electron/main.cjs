@@ -1,6 +1,7 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron')
 const path = require('path')
 const fs = require('fs')
+const AuthClient = require('./AuthClient.cjs')
 
 // Enable logging
 const logPath = path.join(app.getPath('userData'), 'logs')
@@ -37,11 +38,139 @@ log('INFO', 'Application starting...')
 
 let mainWindow = null
 let proxyServer = null
+let heartbeatController = null
+
+// 鉴权配置
+const AUTH_CONFIG = {
+  apiBaseUrl: 'http://115.190.182.82:3088',
+  productName: 'mt_coupon_system',
+  enableSignatureVerification: true
+}
+
+const authClient = new AuthClient(AUTH_CONFIG)
+
+// 获取许可证文件路径
+function getLicenseFilePath() {
+  const userDataPath = app.getPath('userData')
+  return path.join(userDataPath, 'license.json')
+}
+
+// 保存授权码
+function saveLicenseKey(licenseKey) {
+  try {
+    const filePath = getLicenseFilePath()
+    fs.writeFileSync(filePath, JSON.stringify({ licenseKey, savedAt: Date.now() }))
+    return true
+  } catch (error) {
+    log('ERROR', `保存授权码失败: ${error.message}`)
+    return false
+  }
+}
+
+// 读取授权码
+function loadLicenseKey() {
+  try {
+    const filePath = getLicenseFilePath()
+    if (fs.existsSync(filePath)) {
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+      return data.licenseKey
+    }
+  } catch (error) {
+    log('ERROR', `读取授权码失败: ${error.message}`)
+  }
+  return null
+}
+
+// 删除授权码
+function removeLicenseKey() {
+  try {
+    const filePath = getLicenseFilePath()
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath)
+    }
+    return true
+  } catch (error) {
+    log('ERROR', `删除授权码失败: ${error.message}`)
+    return false
+  }
+}
+
+// 记录鉴权状态日志
+function setAuthValid(valid) {
+  log('INFO', `[Auth] auth state = ${valid}`)
+}
+
+// 启动鉴权心跳
+function startAuthHeartbeat(licenseKey) {
+  if (heartbeatController) {
+    heartbeatController.stop()
+  }
+
+  heartbeatController = authClient.startHeartbeat(licenseKey, {
+    intervalMs: 30 * 60 * 1000, // 30分钟
+    maxRetries: 3,
+    retryDelayMs: 5000,
+    onInvalid: async (reason) => {
+      log('WARN', `授权验证失败: ${reason}`)
+      // Bug3 修复：先停止心跳，避免弹窗期间继续触发
+      stopAuthHeartbeat()
+      setAuthValid(false)
+
+      const reasonText = {
+        key_invalid: '授权密钥无效',
+        key_expired: '授权密钥已过期',
+        not_activated: '软件未激活',
+        product_disabled: '产品已禁用',
+        network_error: '网络连接失败，请检查网络'
+      }[reason] || `验证失败: ${reason}`
+
+      const result = await dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        title: '授权验证失败',
+        message: reasonText,
+        detail: '请检查您的授权状态。您可以重试验证或退出软件重新授权。',
+        buttons: ['重试', '退出软件'],
+        defaultId: 0,
+        cancelId: 1
+      })
+
+      if (result.response === 0) {
+        // 用户选择重试：通知渲染进程回到鉴权页面重新激活
+        if (mainWindow) {
+          mainWindow.webContents.send('auth-invalid', { reason })
+        }
+        return 'retry'
+      }
+
+      // 用户选择退出：清除授权并退出应用
+      removeLicenseKey()
+      app.quit()
+      return 'exit'
+    },
+    onVerified: (result) => {
+      log('INFO', `授权验证成功: ${JSON.stringify(result)}`)
+      if (mainWindow) {
+        mainWindow.webContents.send('auth-verified', result)
+      }
+    }
+  })
+}
+
+// 停止鉴权心跳
+function stopAuthHeartbeat() {
+  if (heartbeatController) {
+    heartbeatController.stop()
+    heartbeatController = null
+  }
+}
 
 // Import proxy service
 const ProxyService = require('./proxy/proxyService.cjs')
 
 function createWindow() {
+  // 隐藏菜单栏
+  Menu.setApplicationMenu(null)
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -109,11 +238,19 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
+  stopAuthHeartbeat()
   if (proxyServer) {
     proxyServer.stop()
   }
   if (process.platform !== 'darwin') {
     app.quit()
+  }
+})
+
+app.on('before-quit', () => {
+  stopAuthHeartbeat()
+  if (proxyServer) {
+    proxyServer.stop()
   }
 })
 
@@ -354,5 +491,156 @@ ipcMain.handle('check-risk-control', async (event, { token, giftId, userId, open
   } catch (error) {
     log('ERROR', `风控检测失败: ${error.message}`)
     return { success: false, error: error.message }
+  }
+})
+
+// =====================================================
+// 软件鉴权相关 IPC 处理
+// =====================================================
+
+// 检查本地授权状态
+ipcMain.handle('auth-check-local', async () => {
+  const licenseKey = loadLicenseKey()
+
+  if (!licenseKey) {
+    return { hasLicense: false }
+  }
+
+  try {
+    const result = await authClient.check(licenseKey)
+    // check() 返回的是 activated 字段（不是 valid/success）
+    const isValid = result.activated === true
+
+    if (isValid) {
+      setAuthValid(true)
+      try {
+        await authClient.initializeSession(licenseKey)
+      } catch (e) {
+        log('WARN', `初始化会话失败: ${e.message}`)
+      }
+      startAuthHeartbeat(licenseKey)
+
+      return {
+        hasLicense: true,
+        valid: true,
+        licenseKey,
+        info: result,
+        isPermanent: authClient.isPermanent,
+        expiresAt: authClient.licenseExpiresAt,
+        expiresAtText: authClient.licenseExpiresAtText,
+        remainingDays: authClient.remainingDays,
+        switchCount: authClient.switchCount,
+        maxSwitches: authClient.maxSwitches,
+        remainingSwitches: authClient.remainingSwitches
+      }
+    }
+
+    return { hasLicense: true, valid: false, reason: result.reason || result.message }
+  } catch (error) {
+    return { hasLicense: true, valid: false, reason: 'network_error', error: error.message }
+  }
+})
+
+// 激活授权
+ipcMain.handle('auth-activate', async (event, licenseKey) => {
+  try {
+    const result = await authClient.activate(licenseKey)
+    if (result.success) {
+      setAuthValid(true)
+      saveLicenseKey(licenseKey)
+      // Bug5/7 修复：先完成 initializeSession 再延迟启动心跳，避免竞态
+      try {
+        await authClient.initializeSession(licenseKey)
+      } catch (e) {
+        log('WARN', `初始化会话失败: ${e.message}`)
+      }
+      setTimeout(() => startAuthHeartbeat(licenseKey), 2000)
+
+      return {
+        success: true,
+        info: result,
+        isPermanent: authClient.isPermanent,
+        expiresAt: authClient.licenseExpiresAt,
+        expiresAtText: authClient.licenseExpiresAtText,
+        remainingDays: authClient.remainingDays,
+        switchCount: authClient.switchCount,
+        maxSwitches: authClient.maxSwitches,
+        remainingSwitches: authClient.remainingSwitches
+      }
+    }
+    return { success: false, reason: result.reason || '激活失败' }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 验证密钥
+ipcMain.handle('auth-validate', async (event, licenseKey) => {
+  try {
+    const result = await authClient.validate(licenseKey)
+    return result
+  } catch (error) {
+    return { valid: false, error: error.message }
+  }
+})
+
+// 取消激活
+ipcMain.handle('auth-deactivate', async () => {
+  const licenseKey = loadLicenseKey()
+  if (!licenseKey) {
+    return { success: false, reason: '未找到授权码' }
+  }
+
+  try {
+    const result = await authClient.deactivate(licenseKey)
+    if (result.success) {
+      setAuthValid(false)
+      stopAuthHeartbeat()
+      removeLicenseKey()
+      return { success: true }
+    }
+    return { success: false, reason: result.error || result.reason || '取消激活失败' }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 获取机器码
+ipcMain.handle('auth-get-machine-code', async () => {
+  try {
+    const machineCode = await authClient.getMachineCode()
+    return { success: true, machineCode }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 清除本地授权
+ipcMain.handle('auth-clear-local', async () => {
+  setAuthValid(false)
+  stopAuthHeartbeat()
+  try {
+    await authClient.cleanup()
+  } catch (e) {
+    log('WARN', `清理授权失败: ${e.message}`)
+  }
+  removeLicenseKey()
+  return { success: true }
+})
+
+// 获取完整授权状态
+ipcMain.handle('auth-get-full-status', async () => {
+  const licenseKey = loadLicenseKey()
+  return {
+    success: true,
+    hasLicense: !!licenseKey,
+    hasValidToken: authClient.hasValidToken,
+    isPermanent: authClient.isPermanent,
+    expiresAt: authClient.licenseExpiresAt,
+    expiresAtText: authClient.licenseExpiresAtText,
+    remainingDays: authClient.remainingDays,
+    switchCount: authClient.switchCount,
+    maxSwitches: authClient.maxSwitches,
+    remainingSwitches: authClient.remainingSwitches
   }
 })

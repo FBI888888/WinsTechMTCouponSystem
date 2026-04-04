@@ -1,0 +1,61 @@
+appId: com.wins.mt-rebate-tools
+productName: 美团联盟个人版查询返利工具
+copyright: Copyright © 2025 聚合云&问世科技
+
+asar: true
+asarUnpack:
+  - node_modules/node-forge/***
+
+compression: maximum
+
+files:
+  - main.js
+  - preload.js
+  - AuthClient.js
+  - mtgsig.js
+  - dist/**/*
+  - services/**/*
+  - assets/**/*
+  - package.json
+  - "!**/*.map"
+  - "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}"
+  - "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}"
+  - "!**/node_modules/*.d.ts"
+  - "!**/node_modules/.cache/**/*"
+  - "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}"
+  - "!**/._*"
+  - "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}"
+  - "!**/{thumbs.db,.flowconfig,.idea,.vs,.nyc_output}"
+  - "!**/{appveyor.yml,.travis.yml,circle.yml}"
+  - "!**/data/**/*"
+
+directories:
+  output: dist-electron
+
+win:
+  icon: assets/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  requestedExecutionLevel: asInvoker
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 美团联盟个人版查询返利工具
+  installerLanguages:
+    - zh_CN
+  language: 2052
+  deleteAppDataOnUninstall: false
+
+portable:
+  artifactName: ${productName}-${version}-便携版.${ext}
+  requestExecutionLevel: user

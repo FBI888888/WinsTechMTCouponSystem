@@ -162,6 +162,12 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down MT Coupon System...")
+    try:
+        from app.services.meituan.scanner import task_service
+        await task_service.close()
+    except Exception as e:
+        logger.warning(f"Scanner resource cleanup failed: {e}")
+
     if scheduler.running:
         scheduler.shutdown()
         logger.info("[Scheduler] Scheduler stopped")

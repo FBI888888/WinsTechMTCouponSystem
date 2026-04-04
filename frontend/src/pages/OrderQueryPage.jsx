@@ -1,8 +1,15 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { ordersApi, accountsApi } from '../api'
 import { Play, Database, Save, Copy } from 'lucide-react'
 import { useDataStore } from '../stores/dataStore'
 import { useToastStore } from '../stores/toastStore'
+import { formatCountSummary, getErrorMessage, getResultErrorMessage } from '../utils/requestFeedback'
+import {
+  createErrorQueryResult,
+  createSuccessQueryResult,
+  markQueryResultSaved,
+  QUERY_RESULT_STATUS
+} from '../utils/queryResult'
 
 function OrderQueryPage() {
   const { accounts, accountsLoaded, fetchAccounts } = useDataStore()
@@ -21,14 +28,22 @@ function OrderQueryPage() {
   }, [accountsLoaded, fetchAccounts])
 
   useEffect(() => {
-    if (accounts && accounts.length > 0 && !selectedAccountId) {
+    if (accounts.length > 0 && !selectedAccountId) {
       setSelectedAccountId(String(accounts[0].id))
     }
-  }, [accounts])
+  }, [accounts, selectedAccountId])
 
-  const selectedAccount = accounts.find(a => a.id === parseInt(selectedAccountId))
+  const selectedAccount = accounts.find(account => account.id === parseInt(selectedAccountId, 10))
 
-  // 前端直接调用美团API查询
+  const resetResult = () => {
+    setResult(null)
+  }
+
+  const buildQueryMeta = () => ({
+    queryOrderId: orderId.trim(),
+    accountId: selectedAccountId
+  })
+
   const handleQuery = async () => {
     if (!selectedAccountId) {
       toast.warning('请先选择账号')
@@ -44,7 +59,7 @@ function OrderQueryPage() {
     }
 
     setLoading(true)
-    setResult(null)
+    resetResult()
 
     try {
       const meituanResult = await window.electronAPI.rebateQueryOne({
@@ -58,37 +73,33 @@ function OrderQueryPage() {
         orderId: orderId.trim()
       })
 
-      if (meituanResult.success && meituanResult.data?.response?.data) {
+      if (meituanResult.success && Array.isArray(meituanResult.data?.response?.data)) {
         const coupons = meituanResult.data.response.data
-        setResult({
-          success: true,
-          coupons: coupons,
+        setResult(createSuccessQueryResult({
           source: 'frontend',
-          message: `查询成功，获取到 ${coupons.length} 个券码`
-        })
+          coupons,
+          message: `查询成功，获取到 ${coupons.length} 个券码`,
+          meta: buildQueryMeta()
+        }))
       } else {
-        const errorMsg = meituanResult.error || meituanResult.data?.error || '查询失败'
-        setResult({
-          success: false,
-          coupons: [],
+        setResult(createErrorQueryResult({
           source: 'frontend',
-          message: errorMsg
-        })
+          message: getResultErrorMessage(meituanResult, '查询失败'),
+          meta: buildQueryMeta()
+        }))
       }
     } catch (error) {
       console.error('Query error:', error)
-      setResult({
-        success: false,
-        coupons: [],
+      setResult(createErrorQueryResult({
         source: 'frontend',
-        message: error.message || '查询异常'
-      })
+        message: getErrorMessage(error, '查询异常'),
+        meta: buildQueryMeta()
+      }))
     } finally {
       setLoading(false)
     }
   }
 
-  // 后端调用美团API查询
   const handleBackendQuery = async () => {
     if (!selectedAccountId) {
       toast.warning('请先选择账号')
@@ -100,53 +111,49 @@ function OrderQueryPage() {
     }
 
     setBackendLoading(true)
-    setResult(null)
+    resetResult()
 
     try {
       const response = await ordersApi.queryOrderByOrderId({
-        account_id: parseInt(selectedAccountId),
+        account_id: parseInt(selectedAccountId, 10),
         order_id: orderId.trim()
       })
 
       if (response.data?.success) {
         const coupons = response.data.coupons || []
-        setResult({
-          success: true,
-          coupons: coupons,
+        setResult(createSuccessQueryResult({
           source: 'backend',
+          coupons,
           message: response.data.message || `查询成功，获取到 ${coupons.length} 个券码`,
-          saved: response.data.saved
-        })
+          saved: Boolean(response.data.saved),
+          meta: buildQueryMeta()
+        }))
       } else {
-        setResult({
-          success: false,
-          coupons: [],
+        setResult(createErrorQueryResult({
           source: 'backend',
-          message: response.data?.message || '查询失败'
-        })
+          message: response.data?.message || '查询失败',
+          meta: buildQueryMeta()
+        }))
       }
     } catch (error) {
       console.error('Backend query error:', error)
-      setResult({
-        success: false,
-        coupons: [],
+      setResult(createErrorQueryResult({
         source: 'backend',
-        message: error.response?.data?.detail || error.message || '查询异常'
-      })
+        message: getErrorMessage(error, '查询异常'),
+        meta: buildQueryMeta()
+      }))
     } finally {
       setBackendLoading(false)
     }
   }
 
-  // 保存查询结果到数据库
   const handleSave = async () => {
-    if (!result?.success || !result.coupons?.length) {
+    if (result?.status !== QUERY_RESULT_STATUS.SUCCESS || !result.coupons?.length) {
       toast.warning('没有可保存的数据')
       return
     }
 
     try {
-      // 先保存或更新订单
       const orderData = {
         orderId: orderId.trim(),
         orderViewId: orderId.trim(),
@@ -156,40 +163,44 @@ function OrderQueryPage() {
       }
 
       const saveResponse = await ordersApi.saveBatch({
-        account_id: parseInt(selectedAccountId),
+        account_id: parseInt(selectedAccountId, 10),
         orders: [orderData]
       })
 
-      if (saveResponse.data?.success) {
-        const savedOrderId = saveResponse.data.order_ids?.[0]
-
-        // 保存券码
-        for (const couponInfo of result.coupons) {
-          try {
-            await ordersApi.saveCoupon({
-              account_id: parseInt(selectedAccountId),
-              order_id: savedOrderId || null,
-              order_view_id: orderId.trim(),
-              coupon_data: couponInfo,
-              raw_data: { data: result.coupons }
-            })
-          } catch (saveError) {
-            console.error('Save coupon error:', saveError)
-          }
-        }
-
-        toast.success('保存成功')
-        setResult(prev => ({ ...prev, saved: true }))
-      } else {
-        toast.error('保存失败: ' + (saveResponse.data?.message || '未知错误'))
+      if (!saveResponse.data?.success) {
+        toast.error('保存失败: ' + getErrorMessage({ response: { data: saveResponse.data } }, '未知错误'))
+        return
       }
+
+      const savedOrderId = saveResponse.data.order_ids?.[0]
+      const summary = formatCountSummary([
+        { label: '新增', count: saveResponse.data?.new_count || 0 },
+        { label: '更新', count: saveResponse.data?.update_count || 0 },
+        { label: '跳过', count: saveResponse.data?.skip_count || 0 }
+      ])
+
+      for (const couponInfo of result.coupons) {
+        try {
+          await ordersApi.saveCoupon({
+            account_id: parseInt(selectedAccountId, 10),
+            order_id: savedOrderId || null,
+            order_view_id: orderId.trim(),
+            coupon_data: couponInfo,
+            raw_data: { data: result.coupons }
+          })
+        } catch (saveError) {
+          console.error('Save coupon error:', saveError)
+        }
+      }
+
+      toast.success(`保存成功: ${summary}`)
+      setResult(previous => markQueryResultSaved(previous))
     } catch (error) {
       console.error('Save error:', error)
-      toast.error('保存失败: ' + error.message)
+      toast.error('保存失败: ' + getErrorMessage(error, '未知错误'))
     }
   }
 
-  // 复制券码信息
   const handleCopy = async (coupon) => {
     const text = [
       `券码：${coupon.coupon || coupon.encode || '-'}`,
@@ -203,6 +214,13 @@ function OrderQueryPage() {
     } catch {
       toast.error('复制失败')
     }
+  }
+
+  const getCouponStatusTone = (coupon) => {
+    const status = coupon.order_status || coupon.coupon_status || ''
+    if (status.includes('待')) return 'bg-blue-100 text-blue-800'
+    if (status.includes('已')) return 'bg-gray-100 text-gray-700'
+    return 'bg-gray-100 text-gray-800'
   }
 
   return (
@@ -241,12 +259,8 @@ function OrderQueryPage() {
             disabled={loading || backendLoading}
             className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 flex items-center gap-2 disabled:opacity-50"
           >
-            {loading ? (
-              <span className="animate-spin">...</span>
-            ) : (
-              <Play className="w-4 h-4" />
-            )}
-            查询
+            {loading ? <span className="animate-spin">...</span> : <Play className="w-4 h-4" />}
+            本地查询
           </button>
 
           <button
@@ -254,45 +268,45 @@ function OrderQueryPage() {
             disabled={loading || backendLoading}
             className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 flex items-center gap-2 disabled:opacity-50"
           >
-            {backendLoading ? (
-              <span className="animate-spin">...</span>
-            ) : (
-              <Database className="w-4 h-4" />
-            )}
+            {backendLoading ? <span className="animate-spin">...</span> : <Database className="w-4 h-4" />}
             后端查询
           </button>
         </div>
       </div>
 
-      {/* 查询结果 */}
-      {result && (
+      {result ? (
         <div className="flex-1 bg-white rounded-xl shadow-sm overflow-hidden flex flex-col">
-          <div className="p-4 border-b border-gray-100 flex items-center justify-between">
-            <div className="flex items-center gap-3">
+          <div className="p-4 border-b border-gray-100 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3 flex-wrap">
               <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                result.success ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                result.status === QUERY_RESULT_STATUS.SUCCESS
+                  ? 'bg-green-100 text-green-800'
+                  : 'bg-red-100 text-red-800'
               }`}>
-                {result.success ? '成功' : '失败'}
+                {result.status === QUERY_RESULT_STATUS.SUCCESS ? '成功' : '失败'}
               </span>
               <span className="text-sm text-gray-600">{result.message}</span>
-              {result.source === 'backend' && (
-                <span className="text-xs text-blue-500">(后端查询)</span>
-              )}
+              <span className="text-xs text-blue-500">({result.sourceLabel})</span>
               {result.saved && (
-                <span className="text-xs text-green-500">(已保存)</span>
+                <span className="text-xs text-green-600">(已保存)</span>
+              )}
+              {result.status === QUERY_RESULT_STATUS.SUCCESS && (
+                <span className="text-xs text-gray-500">共 {result.count} 条</span>
               )}
             </div>
-            {result.success && result.coupons?.length > 0 && !result.saved && (
+
+            {result.status === QUERY_RESULT_STATUS.SUCCESS && result.count > 0 && !result.saved && (
               <button
                 onClick={handleSave}
                 className="px-3 py-1 bg-green-500 text-white rounded-lg hover:bg-green-600 flex items-center gap-1 text-sm"
               >
-                <Save className="w-3 h-3" /> 保存到数据库
+                <Save className="w-3 h-3" />
+                保存到数据库
               </button>
             )}
           </div>
 
-          {result.coupons?.length > 0 ? (
+          {result.count > 0 ? (
             <div className="flex-1 overflow-auto">
               <table className="w-full">
                 <thead className="bg-gray-50 sticky top-0">
@@ -312,19 +326,15 @@ function OrderQueryPage() {
                       <td className="px-4 py-3 text-sm font-mono">{coupon.coupon || '-'}</td>
                       <td className="px-4 py-3 text-sm font-mono">{coupon.encode || '-'}</td>
                       <td className="px-4 py-3 text-sm">
-                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                          coupon.order_status === '待使用' ? 'bg-blue-100 text-blue-800' :
-                          coupon.order_status === '已使用' ? 'bg-gray-100 text-gray-600' :
-                          'bg-gray-100 text-gray-800'
-                        }`}>
+                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${getCouponStatusTone(coupon)}`}>
                           {coupon.order_status || coupon.coupon_status || '-'}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-sm text-gray-500 truncate max-w-[200px]" title={coupon.title}>
+                      <td className="px-4 py-3 text-sm text-gray-500 truncate max-w-[220px]" title={coupon.title}>
                         {coupon.title || '-'}
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-500">{coupon.verifyTime || '-'}</td>
-                      <td className="px-4 py-3 text-sm text-gray-500 truncate max-w-[150px]" title={coupon.verifyPoiName}>
+                      <td className="px-4 py-3 text-sm text-gray-500 truncate max-w-[160px]" title={coupon.verifyPoiName}>
                         {coupon.verifyPoiName || '-'}
                       </td>
                       <td className="px-4 py-3 text-sm">
@@ -332,7 +342,8 @@ function OrderQueryPage() {
                           onClick={() => handleCopy(coupon)}
                           className="px-2 py-1 text-xs bg-blue-50 text-blue-600 rounded hover:bg-blue-100 flex items-center gap-1"
                         >
-                          <Copy className="w-3 h-3" /> 复制
+                          <Copy className="w-3 h-3" />
+                          复制
                         </button>
                       </td>
                     </tr>
@@ -342,15 +353,15 @@ function OrderQueryPage() {
             </div>
           ) : (
             <div className="flex-1 flex items-center justify-center text-gray-500">
-              {result.success ? '该订单没有券码' : '查询失败，请检查订单号或账号信息'}
+              {result.status === QUERY_RESULT_STATUS.SUCCESS
+                ? '该订单没有可展示的券码'
+                : '查询失败，请检查订单号或账号信息'}
             </div>
           )}
         </div>
-      )}
-
-      {!result && (
+      ) : (
         <div className="flex-1 bg-white rounded-xl shadow-sm flex items-center justify-center text-gray-500">
-          请输入订单号并点击查询
+          请输入订单号并选择查询方式
         </div>
       )}
     </div>

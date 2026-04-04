@@ -61,30 +61,30 @@ export const accountsApi = {
 
 // Orders API
 export const ordersApi = {
-  getAll: (params) => api.get('/api/orders', { params }),
+  getAll: (params, config = {}) => api.get('/api/orders', { ...config, params }),
   get: (id) => api.get(`/api/orders/${id}`),
   delete: (id) => api.delete(`/api/orders/${id}`),
+  getExistingIds: (accountId) => api.get('/api/orders/existing-ids', { params: { account_id: accountId } }),
   saveBatch: (data) => api.post('/api/orders/save-batch', data),
   saveCoupon: (data) => api.post('/api/orders/save-coupon', data),
   updateQueryStatus: (data) => api.post('/api/orders/update-query-status', data),
   getPendingCouponQuery: (params) => api.get('/api/orders/pending-coupon-query', { params }),
-  getIds: (params) => api.get('/api/orders/ids', { params }),  // 获取订单ID集合（用于去重）
-  queryOrderByOrderId: (data) => api.post('/api/orders/query-by-order-id', data)  // 通过订单号查询券码
+  queryOrderByOrderId: (data) => api.post('/api/orders/query-by-order-id', data)
 }
 
 // Coupons API
 export const couponsApi = {
-  getAll: (params) => api.get('/api/coupons', { params }),
+  getAll: (params, config = {}) => api.get('/api/coupons', { ...config, params }),
   get: (id) => api.get(`/api/coupons/${id}`),
-  query: (data) => api.post('/api/coupons/query', data),
-  queryBackend: (data) => api.post('/api/coupons/query-backend', data),
-  batchUpdate: (data) => api.post('/api/coupons/batch-update', data),
-  getDetailByCode: (couponCode) => api.get(`/api/coupons/detail/by-code/${couponCode}`)
+  query: (data, config = {}) => api.post('/api/coupons/query', data, config),
+  queryBackend: (data, config = {}) => api.post('/api/coupons/query-backend', data, config),
+  batchUpdate: (data, config = {}) => api.post('/api/coupons/batch-update', data, config),
+  getDetailByCode: (couponCode, config = {}) => api.get(`/api/coupons/detail/by-code/${couponCode}`, config)
 }
 
 // Users API
 export const usersApi = {
-  getAll: (params) => api.get('/api/users', { params }),
+  getAll: (params, config = {}) => api.get('/api/users', { ...config, params }),
   get: (id) => api.get(`/api/users/${id}`),
   create: (data) => api.post('/api/users', data),
   update: (id, data) => api.put(`/api/users/${id}`, data),
@@ -95,10 +95,10 @@ export const usersApi = {
 
 // Logs API
 export const logsApi = {
-  getOperations: (params) => api.get('/api/logs/operations', { params }),
-  getLogins: (params) => api.get('/api/logs/logins', { params }),
-  getScheduledTasks: (params) => api.get('/api/logs/scheduled-tasks', { params }),
-  getScheduledTaskDetail: (id) => api.get(`/api/logs/scheduled-tasks/${id}`),
+  getOperations: (params, config = {}) => api.get('/api/logs/operations', { ...config, params }),
+  getLogins: (params, config = {}) => api.get('/api/logs/logins', { ...config, params }),
+  getScheduledTasks: (params, config = {}) => api.get('/api/logs/scheduled-tasks', { ...config, params }),
+  getScheduledTaskDetail: (id, config = {}) => api.get(`/api/logs/scheduled-tasks/${id}`, config),
   clearOperations: () => api.delete('/api/logs/operations'),
   clearLogins: () => api.delete('/api/logs/logins'),
   clearScheduledTasks: () => api.delete('/api/logs/scheduled-tasks')
@@ -106,7 +106,7 @@ export const logsApi = {
 
 // Settings API
 export const settingsApi = {
-  getAll: (params) => api.get('/api/settings', { params }),
+  getAll: (params, config = {}) => api.get('/api/settings', { ...config, params }),
   get: (key) => api.get(`/api/settings/${key}`),
   set: (key, data) => api.put(`/api/settings/${key}`, data),
   create: (data) => api.post('/api/settings', data),
@@ -115,7 +115,7 @@ export const settingsApi = {
 
 // Stats API
 export const statsApi = {
-  getDashboard: () => api.get('/api/stats/dashboard')
+  getDashboard: (config = {}) => api.get('/api/stats/dashboard', config)
 }
 
 export default api

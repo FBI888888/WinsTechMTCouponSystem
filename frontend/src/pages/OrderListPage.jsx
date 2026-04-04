@@ -1,8 +1,10 @@
-import { useState, useEffect, useRef } from 'react'
+﻿import { useState, useEffect, useRef } from 'react'
 import { ordersApi, accountsApi } from '../api'
 import { Download, Search, Database, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useDataStore } from '../stores/dataStore'
 import { useToastStore } from '../stores/toastStore'
+import { formatCountSummary, getErrorMessage, getResultErrorMessage, isAbortError } from '../utils/requestFeedback'
+import { createErrorQueryResult, createSuccessQueryResult, QUERY_RESULT_STATUS } from '../utils/queryResult'
 
 // 时间范围选项
 const TIME_RANGE_OPTIONS = [
@@ -14,6 +16,8 @@ const TIME_RANGE_OPTIONS = [
   { value: 730, label: '近两年' },
   { value: 1095, label: '近三年' }
 ]
+
+const ORDER_SYNC_SAVE_BATCH_SIZE = 500
 
 function OrderListPage() {
   // 全局缓存
@@ -42,7 +46,11 @@ function OrderListPage() {
   const statusFilter = orderStatusFilter
   const setStatusFilter = setOrderStatusFilter
   const [pageSize, setPageSize] = useState(ordersPageSize)
-  const [searchKeyword, setSearchKeyword] = useState('') // 搜索关键词
+  const [orderSearchKeyword, setOrderSearchKeyword] = useState('')
+  const [titleSearchKeyword, setTitleSearchKeyword] = useState('')
+  const [orderSearchMode, setOrderSearchMode] = useState('exact')
+  const [debouncedOrderSearchKeyword, setDebouncedOrderSearchKeyword] = useState('')
+  const [debouncedTitleSearchKeyword, setDebouncedTitleSearchKeyword] = useState('')
 
   // 右键菜单状态
   const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, order: null })
@@ -50,7 +58,67 @@ function OrderListPage() {
   const [couponQueryDialogOpen, setCouponQueryDialogOpen] = useState(false)
   const [queryingOrder, setQueryingOrder] = useState(null)
   const [couponQueryResult, setCouponQueryResult] = useState(null)
+  const [couponQueryMeta, setCouponQueryMeta] = useState(null)
   const [couponQueryLoading, setCouponQueryLoading] = useState(false)
+  const orderPageCursorRef = useRef({})
+  const couponQueryCacheRef = useRef({})
+  const couponQueryInFlightRef = useRef({})
+  const orderListRequestIdRef = useRef(0)
+  const orderListAbortControllerRef = useRef(null)
+
+  const resetOrderPaginationState = () => {
+    orderPageCursorRef.current = {}
+  }
+
+  const isExactOrderSearchMode =
+    orderSearchMode === 'exact' &&
+    debouncedOrderSearchKeyword.trim().length > 0 &&
+    debouncedTitleSearchKeyword.trim().length === 0
+  const singleExactOrder = isExactOrderSearchMode && orders.length === 1 ? orders[0] : null
+
+  const clearExactOrderSearch = () => {
+    setOrderSearchKeyword('')
+    setOrderSearchMode('exact')
+  }
+
+  const getCouponQueryCacheKey = (order) => {
+    if (!order) return ''
+    return `${selectedAccountId}:${order.id}:${order.order_view_id || order.order_id || ''}`
+  }
+
+  const invalidateCouponQueryCache = ({ closeDialog = false } = {}) => {
+    couponQueryCacheRef.current = {}
+    couponQueryInFlightRef.current = {}
+    if (closeDialog) {
+      setCouponQueryDialogOpen(false)
+      setQueryingOrder(null)
+      setCouponQueryResult(null)
+      setCouponQueryMeta(null)
+      setCouponQueryLoading(false)
+    }
+  }
+
+  const buildOrderQueryParams = (pSize) => {
+    const params = { limit: pSize }
+    if (selectedAccountId) params.account_id = selectedAccountId
+    if (statusFilter && statusFilter !== '0') params.status_filter = parseInt(statusFilter)
+    if (debouncedOrderSearchKeyword.trim()) {
+      params.order_search = debouncedOrderSearchKeyword.trim()
+      params.order_search_mode = orderSearchMode
+    }
+    if (debouncedTitleSearchKeyword.trim()) params.title_search = debouncedTitleSearchKeyword.trim()
+    return params
+  }
+
+  const storeOrderPageCursor = (page, response) => {
+    orderPageCursorRef.current[page] = {
+      nextCursorOrderPayTime: response.data?.next_cursor_order_pay_time || null,
+      nextCursorId: response.data?.next_cursor_id || null,
+      prevCursorOrderPayTime: response.data?.prev_cursor_order_pay_time || null,
+      prevCursorId: response.data?.prev_cursor_id || null,
+      hasMore: Boolean(response.data?.has_more)
+    }
+  }
 
   const loadAccounts = async () => {
     // 如果已加载，直接返回
@@ -67,38 +135,149 @@ function OrderListPage() {
     }
   }
 
-  const loadOrders = async (page = ordersPage, pSize = pageSize, forceRefresh = false) => {
+  const loadOrders = async (page = ordersPage, pSize = pageSize, forceRefresh = false, navigation = 'jump') => {
     // 如果已加载且不强制刷新，直接返回
     if (ordersLoaded && !forceRefresh) return
 
+    const requestId = ++orderListRequestIdRef.current
+    orderListAbortControllerRef.current?.abort()
+    const abortController = new AbortController()
+    orderListAbortControllerRef.current = abortController
     setLoading(true)
     try {
-      const params = {
-        skip: (page - 1) * pSize,
-        limit: pSize
-      }
-      if (selectedAccountId) params.account_id = selectedAccountId
-      if (statusFilter && statusFilter !== '0') params.status_filter = parseInt(statusFilter)
-      if (searchKeyword.trim()) params.search = searchKeyword.trim()
+      const currentPage = ordersPage
+      const currentCursorInfo = orderPageCursorRef.current[currentPage]
+      const pageGap = Math.abs(page - currentPage)
 
-      const response = await ordersApi.getAll(params)
+      const fetchOrderPage = async (targetPage, direction = null, cursorInfo = null) => {
+        const params = buildOrderQueryParams(pSize)
+        let useCursor = false
+
+        if (isExactOrderSearchMode) {
+          params.include_total = false
+        }
+
+        if (direction === 'next' && cursorInfo?.nextCursorOrderPayTime && cursorInfo?.nextCursorId) {
+          params.cursor_order_pay_time = cursorInfo.nextCursorOrderPayTime
+          params.cursor_id = cursorInfo.nextCursorId
+          params.cursor_direction = 'next'
+          useCursor = true
+        } else if (direction === 'prev' && cursorInfo?.prevCursorOrderPayTime && cursorInfo?.prevCursorId) {
+          params.cursor_order_pay_time = cursorInfo.prevCursorOrderPayTime
+          params.cursor_id = cursorInfo.prevCursorId
+          params.cursor_direction = 'prev'
+          useCursor = true
+        }
+
+        if (!useCursor && !isExactOrderSearchMode) {
+          params.skip = (targetPage - 1) * pSize
+        } else if (useCursor) {
+          params.include_total = false
+          if (typeof ordersTotal === 'number' && ordersTotal >= 0) {
+            params.known_total = ordersTotal
+          }
+        }
+
+        const response = await ordersApi.getAll(params, { signal: abortController.signal })
+        storeOrderPageCursor(targetPage, response)
+        return { response, useCursor }
+      }
+
+      let response
+
+      if (isExactOrderSearchMode) {
+        resetOrderPaginationState()
+        response = (await fetchOrderPage(1)).response
+      } else if (page === 1) {
+        resetOrderPaginationState()
+        response = (await fetchOrderPage(1)).response
+      } else if (
+        currentCursorInfo &&
+        page !== currentPage &&
+        pageGap <= 5 &&
+        navigation !== 'reset'
+      ) {
+        let workingPage = currentPage
+        let workingCursorInfo = currentCursorInfo
+        let walkedToTarget = true
+
+        while (workingPage !== page) {
+          const direction = page > workingPage ? 'next' : 'prev'
+          const targetPage = direction === 'next' ? workingPage + 1 : workingPage - 1
+          const stepResult = await fetchOrderPage(targetPage, direction, workingCursorInfo)
+          response = stepResult.response
+
+          if (!stepResult.useCursor) {
+            walkedToTarget = false
+            break
+          }
+
+          workingPage = targetPage
+          workingCursorInfo = orderPageCursorRef.current[workingPage]
+        }
+
+        if (!walkedToTarget || workingPage !== page) {
+          response = (await fetchOrderPage(page)).response
+        }
+      } else {
+        response = (await fetchOrderPage(page, navigation, currentCursorInfo)).response
+      }
+
+      if (requestId !== orderListRequestIdRef.current) return
+
       setOrders(
         response.data.items || [],
         response.data.total || 0,
-        page,
+        isExactOrderSearchMode ? 1 : page,
         pSize,
-        { account_id: selectedAccountId, status_filter: statusFilter }
+        {
+          account_id: selectedAccountId,
+          status_filter: statusFilter,
+          order_search: debouncedOrderSearchKeyword,
+          title_search: debouncedTitleSearchKeyword,
+          order_search_mode: orderSearchMode
+        }
       )
     } catch (error) {
+      if (isAbortError(error)) return
+      if (requestId !== orderListRequestIdRef.current) return
       console.error('Failed to load orders:', error)
     } finally {
-      setLoading(false)
+      if (orderListAbortControllerRef.current === abortController) {
+        orderListAbortControllerRef.current = null
+      }
+      if (requestId === orderListRequestIdRef.current) {
+        setLoading(false)
+      }
     }
   }
 
   useEffect(() => {
     loadAccounts()
   }, [])
+
+  useEffect(() => {
+    return () => {
+      orderListAbortControllerRef.current?.abort()
+      orderListRequestIdRef.current += 1
+    }
+  }, [])
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedOrderSearchKeyword(orderSearchKeyword)
+    }, 300)
+
+    return () => clearTimeout(timer)
+  }, [orderSearchKeyword])
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedTitleSearchKeyword(titleSearchKeyword)
+    }, 300)
+
+    return () => clearTimeout(timer)
+  }, [titleSearchKeyword])
 
   // 账号加载完成后设置默认值（仅当没有选择任何账号时）
   useEffect(() => {
@@ -110,52 +289,52 @@ function OrderListPage() {
   // 监听账号或状态筛选变化，自动重新加载订单
   useEffect(() => {
     if (orderSelectedAccountId) {
-      loadOrders(1, pageSize, true)
+      invalidateCouponQueryCache({ closeDialog: true })
+      resetOrderPaginationState()
+      loadOrders(1, pageSize, true, 'reset')
     }
-  }, [orderSelectedAccountId, orderStatusFilter, searchKeyword])
+  }, [orderSelectedAccountId, orderStatusFilter, debouncedOrderSearchKeyword, debouncedTitleSearchKeyword, orderSearchMode])
 
   // 分页控制
   const totalPages = Math.ceil(ordersTotal / ordersPageSize)
 
   const handlePageChange = (newPage) => {
+    if (isExactOrderSearchMode) return
     if (newPage < 1 || newPage > totalPages) return
+    const navigation =
+      newPage === ordersPage + 1 ? 'next' :
+      newPage === ordersPage - 1 ? 'prev' :
+      'jump'
     updateOrdersPage(newPage)
-    loadOrders(newPage, ordersPageSize, true)
+    loadOrders(newPage, ordersPageSize, true, navigation)
   }
 
   const handlePageSizeChange = (newSize) => {
     setPageSize(newSize)
     updateOrdersPage(1)
-    loadOrders(1, newSize, true)
+    resetOrderPaginationState()
+    loadOrders(1, newSize, true, 'reset')
   }
 
   // 从接口获取最新订单列表（优化版：前端预去重）
   const handleSyncOrders = async () => {
     if (!selectedAccountId) {
-      toast.warning('请先选择账号')
+      toast.warning('Please select an account first')
       return
     }
 
     const account = accounts.find(a => a.id === parseInt(selectedAccountId))
     if (!account) {
-      toast.error('账号不存在')
+      toast.error('Account not found')
       return
     }
 
     incrementSyncRunId()
-    const myRunId = orderSyncRunId + 1  // 获取新的 runId
+    const myRunId = orderSyncRunId + 1
     setOrderSyncing(true)
-    setOrderSyncProgress({ current: 0, total: 0, message: '正在获取已有订单ID...' })
+    setOrderSyncProgress({ current: 0, total: 0, message: 'Fetching remote orders...' })
 
     try {
-      // 1. 先从后端获取该账号已有的订单ID集合（轻量请求）
-      const existingIdsResponse = await ordersApi.getIds({ account_id: selectedAccountId })
-      if (myRunId !== useDataStore.getState().orderSyncRunId) return
-
-      const existingIds = new Set(existingIdsResponse.data?.ids || [])
-      setOrderSyncProgress({ current: 0, total: maxPages, message: `已有 ${existingIds.size} 条订单，正在获取远程数据...` })
-
-      // 2. 从美团API获取订单列表
       const result = await window.electronAPI.apiGetOrders({
         userid: account.userid,
         token: account.token,
@@ -167,26 +346,33 @@ function OrderListPage() {
       if (myRunId !== useDataStore.getState().orderSyncRunId) return
 
       if (!result.success) {
-        toast.error(`获取订单失败: ${result.error || '未知错误'}`)
-        setOrderSyncing(false)
+        toast.error(`同步失败: ${getResultErrorMessage(result, '未知错误')}`)
         setOrderSyncProgress({ current: 0, total: 0, message: '' })
         return
       }
 
       const ordersData = result.data || []
 
-      // 3. 解析订单信息
       const parseOrderInfo = (orderInfo, ordertime) => {
         let amount = 0
         let payTime = null
 
         if (Array.isArray(orderInfo)) {
           for (const info of orderInfo) {
-            const amountMatch = info.match(/(?:总价|实付|订单金额)[:：]\s*[¥￥]?\s*([\d.]+)/)
-            if (amountMatch) {
-              amount = parseFloat(amountMatch[1]) || 0
+            // 优先匹配带 ￥/¥ 符号的金额（如 "￥39.90" 或 "¥39.90"）
+            const currencyMatch = info.match(/[￥¥]([0-9]+(?:\.[0-9]+)?)/)
+            if (currencyMatch) {
+              amount = parseFloat(currencyMatch[1]) || 0
             }
-            const timeMatch = info.match(/下单时间[:：]\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})/)
+            // 其次匹配小数格式的数字（更可能是金额，如 "39.90"）
+            if (!amount) {
+              const decimalMatch = info.match(/([0-9]+\.[0-9]+)/)
+              if (decimalMatch) {
+                amount = parseFloat(decimalMatch[1]) || 0
+              }
+            }
+            // 时间匹配
+            const timeMatch = info.match(/(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})/)
             if (timeMatch) {
               payTime = timeMatch[1]
             }
@@ -226,47 +412,124 @@ function OrderListPage() {
         }
       })
 
-      // 4. 前端去重：过滤掉已存在的订单
-      const newOrders = formattedOrders.filter(order => !existingIds.has(order.orderId))
-      const duplicateCount = formattedOrders.length - newOrders.length
-
-      setOrderSyncProgress({
-        current: maxPages,
-        total: maxPages,
-        message: `获取 ${formattedOrders.length} 条，已存在 ${duplicateCount} 条，新增 ${newOrders.length} 条${newOrders.length > 0 ? '，正在保存...' : ''}`
-      })
-
-      // 5. 只保存新增订单
-      if (newOrders.length === 0) {
-        toast.info('没有新订单需要保存')
-        setOrderSyncing(false)
-        setTimeout(() => setOrderSyncProgress({ current: 0, total: 0, message: '' }), 2000)
+      if (formattedOrders.length === 0) {
+        toast.info('No orders available to sync')
+        setOrderSyncProgress({ current: 0, total: 0, message: '' })
         return
       }
 
-      const saveResponse = await ordersApi.saveBatch({
-        account_id: parseInt(selectedAccountId),
-        orders: newOrders
+      // ── 前端本地预去重 ──────────────────────────────────────────
+      // 从 DB 取所有已有 order_id 及状态，在本地比对，
+      // 只把"新增"和"状态变化"的订单发给后端，大幅减少传输量和后端压力
+      setOrderSyncProgress({
+        current: 0,
+        total: formattedOrders.length,
+        message: `已抓取 ${formattedOrders.length} 条，正在获取本地已有订单ID...`
       })
+
+      let existingMap = {}
+      try {
+        const existingRes = await ordersApi.getExistingIds(parseInt(selectedAccountId))
+        existingMap = existingRes.data || {}
+      } catch (e) {
+        // 获取失败时降级为全量发送（不影响正确性，只影响性能）
+        console.warn('获取已有订单ID失败，降级为全量同步:', e)
+      }
+
+      const ordersToSend = []
+      let clientSkipCount = 0
+
+      for (const order of formattedOrders) {
+        if (existingMap[order.orderId]) {
+          // 已存在，直接跳过，不更新
+          clientSkipCount++
+        } else {
+          // 新订单，需要入库
+          ordersToSend.push(order)
+        }
+      }
 
       if (myRunId !== useDataStore.getState().orderSyncRunId) return
 
-      if (saveResponse.data?.success) {
+      if (ordersToSend.length === 0) {
         setOrderSyncProgress({
-          current: maxPages,
-          total: maxPages,
-          message: `同步完成！新增 ${saveResponse.data?.new_count || newOrders.length} 条`
+          current: formattedOrders.length,
+          total: formattedOrders.length,
+          message: `同步完成: 全部 ${formattedOrders.length} 条均已是最新，无需更新`
         })
-        await loadOrders(1, pageSize, true)
+        toast.success(`订单同步完成: 全部 ${clientSkipCount} 条均已是最新`)
+        await loadOrders(1, pageSize, true, 'reset')
         setTimeout(() => setOrderSyncProgress({ current: 0, total: 0, message: '' }), 3000)
-      } else {
-        toast.error('保存失败: ' + (saveResponse.data?.message || '未知错误'))
-        setOrderSyncProgress({ current: 0, total: 0, message: '' })
+        return
+      }
+      // ────────────────────────────────────────────────────────────
+
+      setOrderSyncProgress({
+        current: 0,
+        total: ordersToSend.length,
+        message: `本地去重后剩余 ${ordersToSend.length} 条（跳过 ${clientSkipCount} 条），开始落库...`
+      })
+
+      let aggregatedNewCount = 0
+      let aggregatedUpdateCount = 0
+      let aggregatedSkipCount = clientSkipCount
+
+      for (let start = 0; start < ordersToSend.length; start += ORDER_SYNC_SAVE_BATCH_SIZE) {
+        if (myRunId !== useDataStore.getState().orderSyncRunId) return
+
+        const batchOrders = ordersToSend.slice(start, start + ORDER_SYNC_SAVE_BATCH_SIZE)
+        const batchNumber = Math.floor(start / ORDER_SYNC_SAVE_BATCH_SIZE) + 1
+        const totalBatches = Math.ceil(ordersToSend.length / ORDER_SYNC_SAVE_BATCH_SIZE)
+
+        setOrderSyncProgress({
+          current: start,
+          total: ordersToSend.length,
+          message: `正在保存批次 ${batchNumber}/${totalBatches}（${start + 1}-${start + batchOrders.length} / ${ordersToSend.length}）...`
+        })
+
+        const saveResponse = await ordersApi.saveBatch({
+          account_id: parseInt(selectedAccountId),
+          orders: batchOrders
+        })
+
+        if (myRunId !== useDataStore.getState().orderSyncRunId) return
+
+        if (!saveResponse.data?.success) {
+          toast.error('保存失败: ' + getErrorMessage({ response: { data: saveResponse.data } }, '未知错误'))
+          setOrderSyncProgress({ current: 0, total: 0, message: '' })
+          return
+        }
+
+        aggregatedNewCount += saveResponse.data?.new_count || 0
+        aggregatedUpdateCount += saveResponse.data?.update_count || 0
+        aggregatedSkipCount += saveResponse.data?.skip_count || 0
       }
 
+      if (myRunId !== useDataStore.getState().orderSyncRunId) return
+
+      {
+        const newCount = aggregatedNewCount
+        const updateCount = aggregatedUpdateCount
+        const skipCount = aggregatedSkipCount
+        const summary = formatCountSummary([
+          { label: '新增', count: newCount },
+          { label: '更新', count: updateCount },
+          { label: '跳过', count: skipCount }
+        ])
+
+        invalidateCouponQueryCache({ closeDialog: true })
+        setOrderSyncProgress({
+          current: ordersToSend.length,
+          total: ordersToSend.length,
+          message: `同步完成: ${summary}`
+        })
+        toast.success(`订单同步完成: ${summary}`)
+        await loadOrders(1, pageSize, true, 'reset')
+        setTimeout(() => setOrderSyncProgress({ current: 0, total: 0, message: '' }), 3000)
+      }
     } catch (error) {
       console.error('Sync orders error:', error)
-      toast.error('同步失败: ' + error.message)
+      toast.error('同步失败: ' + getErrorMessage(error, '未知错误'))
       setOrderSyncProgress({ current: 0, total: 0, message: '' })
     } finally {
       setOrderSyncing(false)
@@ -289,25 +552,25 @@ function OrderListPage() {
   // 券码查询并落库（优化版：使用后端API一次性获取待查询订单）
   const handleQueryCoupons = async () => {
     if (!selectedAccountId) {
-      toast.warning('请先选择账号')
+      toast.warning('Please select an account first')
       return
     }
 
     const account = accounts.find(a => a.id === parseInt(selectedAccountId))
     if (!account) {
-      toast.error('账号不存在')
+      toast.error('Account not found')
       return
     }
 
     if (!account.open_id || !account.open_id_cipher) {
-      toast.warning('该账号缺少 openId/openIdCipher，请先在账号管理中重新抓取并保存')
+      toast.warning('This account is missing openId/openIdCipher. Please recapture and save it first.')
       return
     }
 
     incrementQueryRunId()
-    const myRunId = orderQueryRunId + 1  // 获取新的 runId
+    const myRunId = orderQueryRunId + 1
     setOrderQuerying(true)
-    setOrderQueryProgress({ current: 0, total: 0, message: '正在获取待查询订单...' })
+    setOrderQueryProgress({ current: 0, total: 0, message: 'Fetching pending orders...' })
 
     let successCount = 0
     let failCount = 0
@@ -315,57 +578,48 @@ function OrderListPage() {
     const failOrderIds = []
 
     try {
-      // 1. 使用后端API一次性获取所有待查询订单
+      const MAX_SCAN_COUNT = 1000
       const response = await ordersApi.getPendingCouponQuery({
         account_id: selectedAccountId,
-        status_filter: statusFilter && statusFilter !== '0' ? parseInt(statusFilter) : undefined
+        status_filter: statusFilter && statusFilter !== '0' ? parseInt(statusFilter) : undefined,
+        limit: MAX_SCAN_COUNT
       })
 
       if (myRunId !== useDataStore.getState().orderQueryRunId) return
 
       const ordersToQuery = response.data?.items || []
-      const totalCount = response.data?.total || 0
+      const returnedCount = response.data?.returned_count || ordersToQuery.length
+      const hasMore = Boolean(response.data?.has_more)
 
       if (ordersToQuery.length === 0) {
-        toast.info('所有订单都已查询过券码')
-        setOrderQuerying(false)
+        toast.info('All eligible orders have already been queried')
         setOrderQueryProgress({ current: 0, total: 0, message: '' })
         return
       }
 
-      // 单次最多扫描1000个订单
-      const MAX_SCAN_COUNT = 1000
-      const actualQueryCount = Math.min(ordersToQuery.length, MAX_SCAN_COUNT)
-      const limited = ordersToQuery.length > MAX_SCAN_COUNT
-
       setOrderQueryProgress({
         current: 0,
-        total: actualQueryCount,
-        message: limited 
-          ? `待查询 ${ordersToQuery.length} 条，本次扫描前 ${MAX_SCAN_COUNT} 条` 
-          : `待查询 ${ordersToQuery.length} 条订单`
+        total: returnedCount,
+        message: hasMore
+          ? `Fetched ${returnedCount} pending orders for this batch. More orders remain for later scans.`
+          : `Fetched ${returnedCount} pending orders.`
       })
 
-      // 如果超过限制，只取前1000个
-      const queryList = limited ? ordersToQuery.slice(0, MAX_SCAN_COUNT) : ordersToQuery
-
-      // 并发控制：每次最多3个并发请求
+      const queryList = ordersToQuery
       const CONCURRENCY = 3
-      const REQUEST_DELAY = 500  // 批次间延迟
+      const REQUEST_DELAY = 500
 
-      // 2. 分批并行处理
       for (let i = 0; i < queryList.length && myRunId === useDataStore.getState().orderQueryRunId; i += CONCURRENCY) {
         const batch = queryList.slice(i, i + CONCURRENCY)
 
         setOrderQueryProgress({
           current: i,
-          total: actualQueryCount,
-          message: limited 
-            ? `正在查询 ${i + 1}-${Math.min(i + CONCURRENCY, actualQueryCount)}/${actualQueryCount} (共${ordersToQuery.length}条)...`
-            : `正在查询 ${i + 1}-${Math.min(i + CONCURRENCY, actualQueryCount)}/${actualQueryCount}...`
+          total: returnedCount,
+          message: hasMore
+            ? `正在查询 ${i + 1}-${Math.min(i + CONCURRENCY, returnedCount)}/${returnedCount}，后续还有更多订单...`
+            : `正在查询 ${i + 1}-${Math.min(i + CONCURRENCY, returnedCount)}/${returnedCount}...`
         })
 
-        // 并行执行批次内的请求
         const batchPromises = batch.map(order =>
           window.electronAPI.rebateQueryOne({
             account: {
@@ -378,11 +632,10 @@ function OrderListPage() {
             orderId: order.order_view_id
           }).then(async result => {
             if (result.success && result.data?.response) {
-              const response = result.data.response
-              const coupons = response.data
+              const backendResponse = result.data.response
+              const coupons = backendResponse.data
 
               if (Array.isArray(coupons) && coupons.length > 0) {
-                // 保存所有券码
                 for (const couponInfo of coupons) {
                   try {
                     await ordersApi.saveCoupon({
@@ -390,7 +643,7 @@ function OrderListPage() {
                       order_id: order.id,
                       order_view_id: order.order_view_id,
                       coupon_data: couponInfo,
-                      raw_data: response
+                      raw_data: backendResponse
                     })
                   } catch (saveError) {
                     console.error('Save coupon error:', saveError)
@@ -406,10 +659,8 @@ function OrderListPage() {
           })
         )
 
-        // 等待当前批次完成
         const batchResults = await Promise.all(batchPromises)
 
-        // 统计结果
         for (const result of batchResults) {
           if (result.success) {
             successCount++
@@ -420,7 +671,6 @@ function OrderListPage() {
           }
         }
 
-        // 批次间延迟（避免请求过于频繁）
         if (i + CONCURRENCY < queryList.length && myRunId === useDataStore.getState().orderQueryRunId) {
           const wait = REQUEST_DELAY + Math.floor(Math.random() * 300)
           await new Promise(resolve => setTimeout(resolve, wait))
@@ -429,7 +679,6 @@ function OrderListPage() {
 
       if (myRunId !== useDataStore.getState().orderQueryRunId) return
 
-      // 批量更新订单的券码查询状态
       if (successOrderIds.length > 0) {
         try {
           await ordersApi.updateQueryStatus({ order_ids: successOrderIds, status: 1 })
@@ -446,19 +695,25 @@ function OrderListPage() {
       }
 
       setOrderQueryProgress({
-        current: actualQueryCount,
-        total: actualQueryCount,
-        message: limited 
-          ? `本次扫描完成！成功 ${successCount} 条，失败 ${failCount} 条（共${ordersToQuery.length}条待查询）`
-          : `查询完成！成功 ${successCount} 条，失败 ${failCount} 条`
+        current: returnedCount,
+        total: returnedCount,
+        message: hasMore
+          ? `本批完成: ${formatCountSummary([{ label: '成功', count: successCount }, { label: '失败', count: failCount }])}。仍有剩余订单待下次处理。`
+          : `查询完成: ${formatCountSummary([{ label: '成功', count: successCount }, { label: '失败', count: failCount }])}`
       })
+      toast.success(
+        hasMore
+          ? `本批查券完成: ${formatCountSummary([{ label: '成功', count: successCount }, { label: '失败', count: failCount }])}，仍有剩余订单`
+          : `查券完成: ${formatCountSummary([{ label: '成功', count: successCount }, { label: '失败', count: failCount }])}`
+      )
 
+      invalidateCouponQueryCache({ closeDialog: true })
       await loadOrders(ordersPage, ordersPageSize, true)
       setTimeout(() => setOrderQueryProgress({ current: 0, total: 0, message: '' }), 5000)
 
     } catch (error) {
       console.error('Query coupons error:', error)
-      toast.error('查询失败: ' + error.message)
+      toast.error('查券失败: ' + getErrorMessage(error, '未知错误'))
     } finally {
       setOrderQuerying(false)
     }
@@ -480,12 +735,8 @@ function OrderListPage() {
     setContextMenu({ visible: false, x: 0, y: 0, order: null })
   }
 
-  // 查询单个订单的券码
-  const handleQuerySingleCoupon = async () => {
-    if (!contextMenu.order) return
-
-    const order = contextMenu.order
-    closeContextMenu()
+  const queryCouponForOrder = async (order, options = {}) => {
+    const { forceRefresh = false } = options
 
     // 检查账号信息
     const account = accounts.find(a => a.id === parseInt(selectedAccountId))
@@ -502,32 +753,96 @@ function OrderListPage() {
     setQueryingOrder(order)
     setCouponQueryDialogOpen(true)
     setCouponQueryLoading(true)
-    setCouponQueryResult(null)
+    setCouponQueryMeta(null)
+
+    const cacheKey = getCouponQueryCacheKey(order)
+    const cachedEntry = couponQueryCacheRef.current[cacheKey]
+    if (!forceRefresh && cachedEntry) {
+      setCouponQueryResult(cachedEntry.result)
+      setCouponQueryMeta({
+        source: 'cache',
+        fetchedAt: cachedEntry.fetchedAt
+      })
+      setCouponQueryLoading(false)
+      return
+    }
 
     try {
-      const result = await window.electronAPI.rebateQueryOne({
-        account: {
-          userid: account.userid,
-          token: account.token,
-          csecuuid: account.csecuuid || 'c34d9b03-7520-47e3-9d7c-17a3d930c48d',
-          openId: account.open_id,
-          openIdCipher: account.open_id_cipher
-        },
-        orderId: order.order_view_id
-      })
+      let result
+
+      if (!forceRefresh && couponQueryInFlightRef.current[cacheKey]) {
+        result = await couponQueryInFlightRef.current[cacheKey]
+      } else {
+        const requestPromise = window.electronAPI.rebateQueryOne({
+          account: {
+            userid: account.userid,
+            token: account.token,
+            csecuuid: account.csecuuid || 'c34d9b03-7520-47e3-9d7c-17a3d930c48d',
+            openId: account.open_id,
+            openIdCipher: account.open_id_cipher
+          },
+          orderId: order.order_view_id
+        })
+        couponQueryInFlightRef.current[cacheKey] = requestPromise
+        result = await requestPromise
+      }
 
       if (result.success && result.data?.response) {
-        setCouponQueryResult(result.data.response)
+        const coupons = Array.isArray(result.data.response?.data) ? result.data.response.data : []
+        const queryResult = createSuccessQueryResult({
+          source: 'frontend',
+          coupons,
+          message: coupons.length > 0 ? `查询成功，获取到 ${coupons.length} 个券码` : '未查询到券码信息',
+          meta: {
+            queryOrderId: order.order_id,
+            orderViewId: order.order_view_id
+          }
+        })
+        setCouponQueryResult(queryResult)
+        couponQueryCacheRef.current[cacheKey] = {
+          result: queryResult,
+          fetchedAt: Date.now()
+        }
+        setCouponQueryMeta({
+          source: 'live',
+          fetchedAt: couponQueryCacheRef.current[cacheKey].fetchedAt
+        })
       } else {
-        toast.error('查询失败: ' + (result.error || '未知错误'))
-        setCouponQueryDialogOpen(false)
+        const errorMessage = getResultErrorMessage(result, '未知错误')
+        setCouponQueryResult(createErrorQueryResult({
+          source: 'frontend',
+          message: `查询失败: ${errorMessage}`,
+          meta: {
+            queryOrderId: order.order_id,
+            orderViewId: order.order_view_id
+          }
+        }))
+        toast.error('查询失败: ' + errorMessage)
       }
     } catch (error) {
-      toast.error('查询失败: ' + error.message)
-      setCouponQueryDialogOpen(false)
+      const errorMessage = getErrorMessage(error, '未知错误')
+      setCouponQueryResult(createErrorQueryResult({
+        source: 'frontend',
+        message: `查询失败: ${errorMessage}`,
+        meta: {
+          queryOrderId: order.order_id,
+          orderViewId: order.order_view_id
+        }
+      }))
+      toast.error('查询失败: ' + errorMessage)
     } finally {
+      delete couponQueryInFlightRef.current[cacheKey]
       setCouponQueryLoading(false)
     }
+  }
+
+  // 查询单个订单的券码
+  const handleQuerySingleCoupon = async () => {
+    if (!contextMenu.order) return
+
+    const order = contextMenu.order
+    closeContextMenu()
+    await queryCouponForOrder(order, { source: 'context_menu' })
   }
 
   // 点击其他地方关闭右键菜单
@@ -646,12 +961,35 @@ function OrderListPage() {
           </div>
 
           <div className="min-w-[200px]">
-            <label className="block text-xs text-gray-500 mb-1">搜索</label>
+            <label className="block text-xs text-gray-500 mb-1">订单号搜索</label>
             <input
               type="text"
-              value={searchKeyword}
-              onChange={(e) => setSearchKeyword(e.target.value)}
-              placeholder="订单号/标题关键词"
+              value={orderSearchKeyword}
+              onChange={(e) => setOrderSearchKeyword(e.target.value)}
+              placeholder="订单号 / 订单视图号"
+              className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            />
+          </div>
+
+          <div className="min-w-[120px]">
+            <label className="block text-xs text-gray-500 mb-1">匹配方式</label>
+            <select
+              value={orderSearchMode}
+              onChange={(e) => setOrderSearchMode(e.target.value)}
+              className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            >
+              <option value="exact">精确</option>
+              <option value="prefix">前缀</option>
+            </select>
+          </div>
+
+          <div className="min-w-[220px]">
+            <label className="block text-xs text-gray-500 mb-1">标题搜索</label>
+            <input
+              type="text"
+              value={titleSearchKeyword}
+              onChange={(e) => setTitleSearchKeyword(e.target.value)}
+              placeholder="标题关键词"
               className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
             />
           </div>
@@ -669,7 +1007,7 @@ function OrderListPage() {
           </div>
 
           <button
-            onClick={() => loadOrders(1, pageSize, true)}
+            onClick={() => loadOrders(1, pageSize, true, 'reset')}
             disabled={loading || orderSyncing || orderQuerying}
             className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 flex items-center gap-2 disabled:opacity-50"
           >
@@ -703,7 +1041,7 @@ function OrderListPage() {
           </button>
 
           <span className="text-sm text-gray-500 ml-auto">
-            共 {ordersTotal} 条订单
+            {isExactOrderSearchMode ? `查单结果 ${orders.length} 条` : `共 ${ordersTotal} 条订单`}
           </span>
         </div>
 
@@ -740,6 +1078,51 @@ function OrderListPage() {
       </div>
 
       <div className="flex-1 bg-white rounded-xl shadow-sm overflow-hidden flex flex-col">
+        {singleExactOrder && (
+          <div className="border-b border-orange-100 bg-orange-50/70 px-4 py-3">
+            <div className="flex flex-wrap items-center gap-3 justify-between">
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-gray-800">
+                  已定位订单 {singleExactOrder.order_id}
+                </div>
+                <div className="text-xs text-gray-600 mt-1">
+                  {singleExactOrder.title || '无标题'} · {getStatusText(singleExactOrder)} · 券码状态 {getQueryStatusText(singleExactOrder.coupon_query_status)}
+                </div>
+                <div className="flex flex-wrap gap-2 mt-3 text-xs">
+                  <span className="px-2 py-1 rounded-full bg-white text-gray-700 border border-orange-100">
+                    订单视图号 {singleExactOrder.order_view_id || '-'}
+                  </span>
+                  <span className="px-2 py-1 rounded-full bg-white text-gray-700 border border-orange-100">
+                    金额 {singleExactOrder.order_amount ?? '0'}
+                  </span>
+                  <span className="px-2 py-1 rounded-full bg-white text-gray-700 border border-orange-100">
+                    分类 {singleExactOrder.catename || '-'}
+                  </span>
+                  <span className="px-2 py-1 rounded-full bg-white text-gray-700 border border-orange-100">
+                    下单时间 {singleExactOrder.order_pay_time || '-'}
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => queryCouponForOrder(singleExactOrder, { source: 'exact_search_card' })}
+                  disabled={couponQueryLoading}
+                  className="px-3 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-50 flex items-center gap-2"
+                >
+                  <Search className={`w-4 h-4 ${couponQueryLoading ? 'animate-pulse' : ''}`} />
+                  {couponQueryLoading ? '查询中...' : '快速查券码'}
+                </button>
+                <button
+                  onClick={clearExactOrderSearch}
+                  className="px-3 py-2 bg-white text-gray-700 rounded-lg border border-gray-200 hover:bg-gray-50"
+                >
+                  清空查单
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="flex-1 overflow-auto">
           <table className="w-full">
             <thead className="bg-gray-50 sticky top-0">
@@ -757,7 +1140,7 @@ function OrderListPage() {
               {orders.map(order => (
                 <tr
                   key={order.id}
-                  className="hover:bg-gray-50 cursor-pointer"
+                  className={`cursor-pointer ${singleExactOrder?.id === order.id ? 'bg-orange-50 ring-1 ring-inset ring-orange-200' : 'hover:bg-gray-50'}`}
                   onContextMenu={(e) => handleContextMenu(e, order)}
                 >
                   <td className="px-4 py-3 text-sm text-gray-900 font-mono">{order.order_id}</td>
@@ -789,7 +1172,7 @@ function OrderListPage() {
         </div>
 
         {/* 分页 */}
-        {ordersTotal > 0 && (
+        {ordersTotal > 0 && !isExactOrderSearchMode && (
           <div className="flex items-center justify-between px-4 py-3 border-t border-gray-200 bg-white">
             <div className="flex items-center gap-2">
               <span className="text-sm text-gray-500">每页</span>
@@ -877,15 +1260,38 @@ function OrderListPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="w-[600px] max-w-[90vw] max-h-[80vh] bg-white rounded-xl shadow-lg overflow-hidden flex flex-col">
             <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-              <div className="font-medium text-gray-800">
-                券码查询结果 - 订单 {queryingOrder?.order_id}
+              <div>
+                <div className="font-medium text-gray-800">
+                  券码查询结果 - 订单 {queryingOrder?.order_id}
+                </div>
+                {couponQueryMeta && (
+                  <div className="text-xs text-gray-500 mt-1">
+                    {couponQueryMeta.source === 'cache' ? '已使用本页缓存结果' : '已完成本地查询'}
+                  </div>
+                )}
+                {couponQueryResult && (
+                  <div className="text-xs text-gray-500 mt-1">
+                    {couponQueryResult.sourceLabel} · {couponQueryResult.status === QUERY_RESULT_STATUS.SUCCESS ? `共 ${couponQueryResult.count} 条` : '失败结果'}
+                  </div>
+                )}
               </div>
-              <button
-                onClick={() => setCouponQueryDialogOpen(false)}
-                className="text-sm text-gray-500 hover:text-gray-700"
-              >
-                关闭
-              </button>
+              <div className="flex items-center gap-3">
+                {queryingOrder && (
+                  <button
+                    onClick={() => queryCouponForOrder(queryingOrder, { forceRefresh: true })}
+                    disabled={couponQueryLoading}
+                    className="text-sm text-orange-600 hover:text-orange-700 disabled:opacity-50"
+                  >
+                    重新查询
+                  </button>
+                )}
+                <button
+                  onClick={() => setCouponQueryDialogOpen(false)}
+                  className="text-sm text-gray-500 hover:text-gray-700"
+                >
+                  关闭
+                </button>
+              </div>
             </div>
             <div className="p-5 overflow-auto flex-1">
               {couponQueryLoading ? (
@@ -895,17 +1301,17 @@ function OrderListPage() {
                 </div>
               ) : couponQueryResult ? (
                 <div className="space-y-4">
-                  {Array.isArray(couponQueryResult.data) && couponQueryResult.data.length > 0 ? (
-                    couponQueryResult.data.map((coupon, index) => (
+                  {couponQueryResult.status === QUERY_RESULT_STATUS.SUCCESS && couponQueryResult.count > 0 ? (
+                    couponQueryResult.coupons.map((coupon, index) => (
                       <div key={index} className="bg-gray-50 rounded-lg p-4">
                         <div className="grid grid-cols-2 gap-3 text-sm">
                           <div>
                             <span className="text-gray-500">券码：</span>
-                            <span className="font-mono font-medium">{coupon.couponCode || '-'}</span>
+                            <span className="font-mono font-medium">{coupon.couponCode || coupon.coupon || '-'}</span>
                           </div>
                           <div>
                             <span className="text-gray-500">状态：</span>
-                            <span className="font-medium">{coupon.couponStatus || '-'}</span>
+                            <span className="font-medium">{coupon.couponStatus || coupon.order_status || coupon.coupon_status || '-'}</span>
                           </div>
                           <div>
                             <span className="text-gray-500">核销时间：</span>
@@ -928,7 +1334,7 @@ function OrderListPage() {
                     ))
                   ) : (
                     <div className="text-center text-gray-500 py-8">
-                      未查询到券码信息
+                      {couponQueryResult.message || '未查询到券码信息'}
                     </div>
                   )}
                 </div>

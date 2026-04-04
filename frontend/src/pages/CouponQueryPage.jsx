@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { couponsApi } from '../api'
 import { Play, Download, Trash2, RefreshCw, Database, ArrowRight, Info, X, Clock, User, FileText, AlertCircle } from 'lucide-react'
 import { useDataStore } from '../stores/dataStore'
 import { useToastStore } from '../stores/toastStore'
+import { getErrorMessage, isAbortError } from '../utils/requestFeedback'
+import { createErrorQueryResult, createSuccessQueryResult, QUERY_RESULT_STATUS } from '../utils/queryResult'
 
 function CouponQueryPage() {
   const {
@@ -15,9 +17,14 @@ function CouponQueryPage() {
 
   const [couponCodes, setCouponCodes] = useState(storedCodes || '')
   const [results, setResults] = useState(storedResults || [])
+  const [querySummary, setQuerySummary] = useState(null)
   const [loading, setLoading] = useState(false)
   const [backendLoading, setBackendLoading] = useState(false)
   const [progress, setProgress] = useState({ current: 0, total: 0 })
+  const couponResultsRequestIdRef = useRef(0)
+  const couponResultsAbortControllerRef = useRef(null)
+  const detailRequestIdRef = useRef(0)
+  const detailAbortControllerRef = useRef(null)
 
   // 详情弹窗状态
   const [showDetail, setShowDetail] = useState(false)
@@ -28,21 +35,42 @@ function CouponQueryPage() {
     setCouponQueryData(results, couponCodes)
   }, [results, couponCodes])
 
+  useEffect(() => {
+    return () => {
+      couponResultsAbortControllerRef.current?.abort()
+      detailAbortControllerRef.current?.abort()
+      couponResultsRequestIdRef.current += 1
+      detailRequestIdRef.current += 1
+    }
+  }, [])
+
   // 获取券码详情
   const handleShowDetail = async (couponCode) => {
+    const requestId = ++detailRequestIdRef.current
+    detailAbortControllerRef.current?.abort()
+    const abortController = new AbortController()
+    detailAbortControllerRef.current = abortController
     setDetailLoading(true)
     setShowDetail(true)
     setDetailData(null)
 
     try {
-      const response = await couponsApi.getDetailByCode(couponCode)
+      const response = await couponsApi.getDetailByCode(couponCode, { signal: abortController.signal })
+      if (requestId !== detailRequestIdRef.current) return
       setDetailData(response.data)
     } catch (error) {
+      if (isAbortError(error)) return
+      if (requestId !== detailRequestIdRef.current) return
       console.error('获取详情失败:', error)
-      toast.error('获取详情失败: ' + (error.response?.data?.detail || error.message))
+      toast.error('获取详情失败: ' + getErrorMessage(error, '未知错误'))
       setShowDetail(false)
     } finally {
-      setDetailLoading(false)
+      if (detailAbortControllerRef.current === abortController) {
+        detailAbortControllerRef.current = null
+      }
+      if (requestId === detailRequestIdRef.current) {
+        setDetailLoading(false)
+      }
     }
   }
 
@@ -51,6 +79,27 @@ function CouponQueryPage() {
     setShowDetail(false)
     setDetailData(null)
   }
+
+  const normalizeCouponQueryRow = (row) => ({
+    id: `${row.coupon_code || row.current_coupon_code || 'unknown'}:${row.order_view_id || row.gift_id || '-'}`,
+    raw: row,
+    couponCode: row.coupon_code || '-',
+    currentCouponCode: row.current_coupon_code || row.coupon_code || '-',
+    displayOrderId: row.order_view_id || '-',
+    displayGiftId: row.gift_id || '-',
+    userId: row.userid || '-',
+    couponStatus: row.coupon_status || '-',
+    verifyTime: row.verify_time || '-',
+    verifyPoiName: row.verify_poi_name || '-',
+    queryStatus: row.status || 'unknown',
+    changeType: row.change_type || 'none',
+    oldCouponCode: row.old_coupon_code || '',
+    changeCount: row.change_count || 0,
+    isOldCode: Boolean(row.is_old_code),
+    codeChanged: Boolean(row.code_changed)
+  })
+
+  const normalizedResults = results.map(normalizeCouponQueryRow)
 
   const handleCopy = async (result) => {
     const lines = [`券码：${result.current_coupon_code || result.coupon_code}`]
@@ -102,17 +151,25 @@ function CouponQueryPage() {
       return
     }
 
+    const requestId = ++couponResultsRequestIdRef.current
+    couponResultsAbortControllerRef.current?.abort()
+    const abortController = new AbortController()
+    couponResultsAbortControllerRef.current = abortController
+    setQuerySummary(null)
     setLoading(true)
+    setBackendLoading(false)
     setProgress({ current: 0, total: codes.length })
     setResults([])
 
     const allResults = []
 
     try {
-      const dbResponse = await couponsApi.query({ coupon_codes: codes })
+      const dbResponse = await couponsApi.query({ coupon_codes: codes }, { signal: abortController.signal })
       const dbResults = dbResponse.data || []
+      if (requestId !== couponResultsRequestIdRef.current) return
 
       for (let i = 0; i < dbResults.length; i++) {
+        if (requestId !== couponResultsRequestIdRef.current) return
         const item = dbResults[i]
         setProgress({ current: i + 1, total: codes.length })
 
@@ -158,6 +215,7 @@ function CouponQueryPage() {
             orderId: queryOrderId,
             isGiftId: isGiftId
           })
+          if (requestId !== couponResultsRequestIdRef.current) return
 
           if (meituanResult.success && meituanResult.data?.response?.data) {
             const coupons = meituanResult.data.response.data
@@ -196,7 +254,7 @@ function CouponQueryPage() {
               })
             } else {
               try {
-                const backendResponse = await couponsApi.queryBackend({ coupon_codes: [item.coupon_code] })
+                const backendResponse = await couponsApi.queryBackend({ coupon_codes: [item.coupon_code] }, { signal: abortController.signal })
                 const backendResult = backendResponse.data?.[0]
                 if (backendResult && backendResult.status === 'found') {
                   allResults.push({
@@ -259,7 +317,7 @@ function CouponQueryPage() {
             }
           } else {
             try {
-              const backendResponse = await couponsApi.queryBackend({ coupon_codes: [item.coupon_code] })
+              const backendResponse = await couponsApi.queryBackend({ coupon_codes: [item.coupon_code] }, { signal: abortController.signal })
               const backendResult = backendResponse.data?.[0]
               if (backendResult && backendResult.status === 'found') {
                 allResults.push({
@@ -323,7 +381,7 @@ function CouponQueryPage() {
         } catch (error) {
           console.error('Query meituan error:', error)
           try {
-            const backendResponse = await couponsApi.queryBackend({ coupon_codes: [item.coupon_code] })
+            const backendResponse = await couponsApi.queryBackend({ coupon_codes: [item.coupon_code] }, { signal: abortController.signal })
             const backendResult = backendResponse.data?.[0]
             if (backendResult && backendResult.status === 'found') {
               allResults.push({
@@ -390,7 +448,17 @@ function CouponQueryPage() {
         }
       }
 
+      if (requestId !== couponResultsRequestIdRef.current) return
+      if (requestId !== couponResultsRequestIdRef.current) return
       setResults(allResults)
+      setQuerySummary(createSuccessQueryResult({
+        source: 'frontend',
+        coupons: allResults,
+        message: `查询完成，返回 ${allResults.length} 条结果`,
+        meta: {
+          inputCount: codes.length
+        }
+      }))
 
       const successResults = allResults.filter(r =>
         r.status === 'success' &&
@@ -406,17 +474,31 @@ function CouponQueryPage() {
               coupon_status: r.coupon_status,
               use_status: r.use_status
             }))
-          })
+          }, { signal: abortController.signal })
           console.log(`批量更新了 ${successResults.length} 条券码状态`)
         } catch (updateError) {
           console.error('批量更新券码状态失败:', updateError)
         }
       }
     } catch (error) {
+      if (isAbortError(error)) return
+      if (requestId !== couponResultsRequestIdRef.current) return
       console.error('Query failed:', error)
-      toast.error('查询失败: ' + error.message)
+      setQuerySummary(createErrorQueryResult({
+        source: 'frontend',
+        message: `查询失败: ${getErrorMessage(error, '未知错误')}`,
+        meta: {
+          inputCount: codes.length
+        }
+      }))
+      toast.error('查询失败: ' + getErrorMessage(error, '未知错误'))
     } finally {
-      setLoading(false)
+      if (couponResultsAbortControllerRef.current === abortController) {
+        couponResultsAbortControllerRef.current = null
+      }
+      if (requestId === couponResultsRequestIdRef.current) {
+        setLoading(false)
+      }
     }
   }
 
@@ -427,11 +509,17 @@ function CouponQueryPage() {
       return
     }
 
+    const requestId = ++couponResultsRequestIdRef.current
+    couponResultsAbortControllerRef.current?.abort()
+    const abortController = new AbortController()
+    couponResultsAbortControllerRef.current = abortController
+    setQuerySummary(null)
     setBackendLoading(true)
+    setLoading(false)
     setResults([])
 
     try {
-      const response = await couponsApi.queryBackend({ coupon_codes: codes })
+      const response = await couponsApi.queryBackend({ coupon_codes: codes }, { signal: abortController.signal })
       const backendResults = response.data || []
 
       const allResults = backendResults.map(item => ({
@@ -451,30 +539,53 @@ function CouponQueryPage() {
         change_count: item.change_count || 0
       }))
 
+      if (requestId !== couponResultsRequestIdRef.current) return
       setResults(allResults)
+      setQuerySummary(createSuccessQueryResult({
+        source: 'backend',
+        coupons: allResults,
+        message: `后端查询完成，返回 ${allResults.length} 条结果`,
+        meta: {
+          inputCount: codes.length
+        }
+      }))
     } catch (error) {
+      if (isAbortError(error)) return
+      if (requestId !== couponResultsRequestIdRef.current) return
       console.error('Backend query failed:', error)
-      toast.error('后端查询失败: ' + error.message)
+      setQuerySummary(createErrorQueryResult({
+        source: 'backend',
+        message: `后端查询失败: ${getErrorMessage(error, '未知错误')}`,
+        meta: {
+          inputCount: codes.length
+        }
+      }))
+      toast.error('后端查询失败: ' + getErrorMessage(error, '未知错误'))
     } finally {
-      setBackendLoading(false)
+      if (couponResultsAbortControllerRef.current === abortController) {
+        couponResultsAbortControllerRef.current = null
+      }
+      if (requestId === couponResultsRequestIdRef.current) {
+        setBackendLoading(false)
+      }
     }
   }
 
   const handleExport = async () => {
     const headers = ['券码', '当前券码', '订单号', '礼物号', 'USERID', '券码状态', '核销时间', '核销门店', '状态', '变更状态', '旧券码', '变更次数']
-    const rows = results.map(r => [
-      r.coupon_code,
-      r.current_coupon_code || r.coupon_code,
-      r.order_view_id || '',
-      r.gift_id || '',
-      r.userid || '',
-      r.coupon_status || '',
-      r.verify_time || '',
-      r.verify_poi_name || '',
-      r.status,
-      getChangeTypeText(r.change_type),
-      r.old_coupon_code || '',
-      r.change_count || 0
+    const rows = normalizedResults.map(row => [
+      row.couponCode,
+      row.currentCouponCode,
+      row.displayOrderId === '-' ? '' : row.displayOrderId,
+      row.displayGiftId === '-' ? '' : row.displayGiftId,
+      row.userId === '-' ? '' : row.userId,
+      row.couponStatus === '-' ? '' : row.couponStatus,
+      row.verifyTime === '-' ? '' : row.verifyTime,
+      row.verifyPoiName === '-' ? '' : row.verifyPoiName,
+      getStatusText(row.queryStatus),
+      row.isOldCode ? '旧券码' : getChangeTypeText(row.changeType),
+      row.oldCouponCode,
+      row.changeCount
     ])
 
     try {
@@ -489,8 +600,15 @@ function CouponQueryPage() {
   }
 
   const handleClear = () => {
+    couponResultsRequestIdRef.current += 1
+    couponResultsAbortControllerRef.current?.abort()
+    couponResultsAbortControllerRef.current = null
     setCouponCodes('')
     setResults([])
+    setQuerySummary(null)
+    setLoading(false)
+    setBackendLoading(false)
+    setProgress({ current: 0, total: 0 })
     clearCouponQueryData()
   }
 
@@ -617,6 +735,25 @@ function CouponQueryPage() {
       </div>
 
       {/* 结果表格 */}
+      {querySummary && (
+        <div className="bg-white rounded-xl shadow-sm px-4 py-3 mb-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+              querySummary.status === QUERY_RESULT_STATUS.SUCCESS
+                ? 'bg-green-100 text-green-800'
+                : 'bg-red-100 text-red-800'
+            }`}>
+              {querySummary.status === QUERY_RESULT_STATUS.SUCCESS ? '成功' : '失败'}
+            </span>
+            <span className="text-sm text-gray-700">{querySummary.message}</span>
+            <span className="text-xs text-blue-500">({querySummary.sourceLabel})</span>
+            {querySummary.status === QUERY_RESULT_STATUS.SUCCESS && (
+              <span className="text-xs text-gray-500">共 {querySummary.count} 条</span>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="flex-1 bg-white rounded-xl shadow-sm overflow-hidden">
         <div className="overflow-auto h-full">
           <table className="w-full">

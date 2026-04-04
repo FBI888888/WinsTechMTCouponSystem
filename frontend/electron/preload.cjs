@@ -40,5 +40,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getVersion: () => ipcRenderer.invoke('get-version'),
 
   // 风控检测
-  checkRiskControl: (params) => ipcRenderer.invoke('check-risk-control', params)
+  checkRiskControl: (params) => ipcRenderer.invoke('check-risk-control', params),
+
+  // =====================================================
+  // 软件鉴权相关 API
+  // =====================================================
+  authCheckLocal: () => ipcRenderer.invoke('auth-check-local'),
+  authActivate: (licenseKey) => ipcRenderer.invoke('auth-activate', licenseKey),
+  authValidate: (licenseKey) => ipcRenderer.invoke('auth-validate', licenseKey),
+  authDeactivate: () => ipcRenderer.invoke('auth-deactivate'),
+  authGetMachineCode: () => ipcRenderer.invoke('auth-get-machine-code'),
+  authClearLocal: () => ipcRenderer.invoke('auth-clear-local'),
+  authGetFullStatus: () => ipcRenderer.invoke('auth-get-full-status'),
+
+  // 鉴权事件监听（保持回调引用，支持精确移除）
+  onAuthInvalid: (callback) => ipcRenderer.on('auth-invalid', callback),
+  onAuthVerified: (callback) => ipcRenderer.on('auth-verified', callback),
+
+  // 精确移除单个监听器
+  offAuthInvalid: (callback) => ipcRenderer.removeListener('auth-invalid', callback),
+  offAuthVerified: (callback) => ipcRenderer.removeListener('auth-verified', callback),
+
+  // 移除某频道全部监听器（保留兼容）
+  removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel)
 })

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { statsApi } from '../api'
 
 function DashboardPage() {
@@ -8,22 +8,45 @@ function DashboardPage() {
     order: { total: 0, pending: 0, completed: 0 },
     coupon: { total: 0, pending: 0, used: 0 }
   })
+  const statsRequestIdRef = useRef(0)
+  const statsAbortControllerRef = useRef(null)
+
+  const isAbortError = (error) =>
+    error?.code === 'ERR_CANCELED' ||
+    error?.name === 'CanceledError' ||
+    error?.name === 'AbortError'
 
   useEffect(() => {
     loadStats()
+    return () => {
+      statsAbortControllerRef.current?.abort()
+      statsRequestIdRef.current += 1
+    }
   }, [])
 
   const loadStats = async () => {
+    const requestId = ++statsRequestIdRef.current
+    statsAbortControllerRef.current?.abort()
+    const abortController = new AbortController()
+    statsAbortControllerRef.current = abortController
     setLoading(true)
     try {
-      const res = await statsApi.getDashboard()
+      const res = await statsApi.getDashboard({ signal: abortController.signal })
+      if (requestId !== statsRequestIdRef.current) return
       if (res.data) {
         setStats(res.data)
       }
     } catch (error) {
+      if (isAbortError(error)) return
+      if (requestId !== statsRequestIdRef.current) return
       console.error('加载统计数据失败:', error)
     } finally {
-      setLoading(false)
+      if (statsAbortControllerRef.current === abortController) {
+        statsAbortControllerRef.current = null
+      }
+      if (requestId === statsRequestIdRef.current) {
+        setLoading(false)
+      }
     }
   }
 

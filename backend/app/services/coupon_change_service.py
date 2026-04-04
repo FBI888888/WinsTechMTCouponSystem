@@ -77,16 +77,66 @@ def batch_find_coupons_by_codes(
             }
         }
     """
-    result = {}
+    if not coupon_codes:
+        return {}
 
-    for code in coupon_codes:
-        coupon, is_from_history, history = find_coupon_by_code(db, code)
+    unique_codes = list(dict.fromkeys(code for code in coupon_codes if code))
+    result = {
+        code: {
+            'coupon': None,
+            'is_from_history': False,
+            'history': None,
+            'current_code': code,
+        }
+        for code in unique_codes
+    }
 
+    current_coupons = db.query(Coupon).filter(Coupon.coupon_code.in_(unique_codes)).all()
+    current_coupon_map = {coupon.coupon_code: coupon for coupon in current_coupons}
+
+    for code, coupon in current_coupon_map.items():
         result[code] = {
             'coupon': coupon,
-            'is_from_history': is_from_history,
+            'is_from_history': False,
+            'history': None,
+            'current_code': coupon.coupon_code,
+        }
+
+    unresolved_codes = [code for code in unique_codes if code not in current_coupon_map]
+    if not unresolved_codes:
+        return result
+
+    histories = db.query(CouponHistory).filter(
+        CouponHistory.old_coupon_code.in_(unresolved_codes)
+    ).order_by(
+        CouponHistory.old_coupon_code.asc(),
+        CouponHistory.changed_at.desc(),
+        CouponHistory.id.desc(),
+    ).all()
+
+    latest_history_map = {}
+    for history in histories:
+        if history.old_coupon_code not in latest_history_map:
+            latest_history_map[history.old_coupon_code] = history
+
+    if not latest_history_map:
+        return result
+
+    coupon_ids = list({history.coupon_id for history in latest_history_map.values()})
+    coupons_by_id = {
+        coupon.id: coupon
+        for coupon in db.query(Coupon).filter(Coupon.id.in_(coupon_ids)).all()
+    }
+
+    for old_code, history in latest_history_map.items():
+        coupon = coupons_by_id.get(history.coupon_id)
+        if not coupon:
+            continue
+        result[old_code] = {
+            'coupon': coupon,
+            'is_from_history': True,
             'history': history,
-            'current_code': history.new_coupon_code if history and hasattr(history, 'new_coupon_code') else code
+            'current_code': history.new_coupon_code,
         }
 
     return result

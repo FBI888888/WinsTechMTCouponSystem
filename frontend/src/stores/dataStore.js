@@ -2,6 +2,7 @@ import { create } from 'zustand'
 
 // 全局请求 Promise 缓存，防止重复请求
 let accountsPromise = null
+let accountsRequestId = 0
 
 // 全局数据缓存 store，用于缓存各页面数据
 export const useDataStore = create((set, get) => ({
@@ -25,18 +26,25 @@ export const useDataStore = create((set, get) => ({
     }
 
     // 如果正在加载中，返回已有的 Promise
-    if (accountsLoading && accountsPromise) {
+    if (accountsLoading && accountsPromise && !forceRefresh) {
       return accountsPromise
     }
 
     // 发起新请求
+    const requestId = ++accountsRequestId
     setAccountsLoading(true)
     accountsPromise = api.getAll().then(response => {
+      if (requestId !== accountsRequestId) {
+        return get().accounts
+      }
+
       setAccounts(response.data)
       return response.data
     }).catch(error => {
-      accountsPromise = null
-      setAccountsLoading(false)
+      if (requestId === accountsRequestId) {
+        accountsPromise = null
+        setAccountsLoading(false)
+      }
       throw error
     })
 
@@ -46,7 +54,8 @@ export const useDataStore = create((set, get) => ({
   // 清除账号缓存（强制下次重新加载）
   invalidateAccounts: () => {
     accountsPromise = null
-    set({ accountsLoaded: false })
+    accountsRequestId += 1
+    set({ accountsLoaded: false, accountsLoading: false })
   },
 
   // 订单列表缓存
@@ -123,6 +132,7 @@ export const useDataStore = create((set, get) => ({
   // 清除所有缓存
   clearCache: () => {
     accountsPromise = null
+    accountsRequestId += 1
     return set({
       accounts: [],
       accountsLoaded: false,

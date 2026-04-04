@@ -1,6 +1,9 @@
+import { useEffect, useCallback } from 'react'
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from './stores/authStore'
+import { useSoftwareAuthStore } from './stores/softwareAuthStore'
 import LoginPage from './pages/LoginPage'
+import AuthPage from './pages/AuthPage'
 import MainLayout from './components/Layout/MainLayout'
 import DashboardPage from './pages/DashboardPage'
 import AccountPage from './pages/AccountPage'
@@ -19,6 +22,54 @@ function PrivateRoute({ children }) {
 }
 
 function App() {
+  const isSoftwareAuthenticated = useSoftwareAuthStore((state) => state.isSoftwareAuthenticated)
+  const isCheckingAuth = useSoftwareAuthStore((state) => state.isCheckingAuth)
+  const setSoftwareAuthenticated = useSoftwareAuthStore((state) => state.setSoftwareAuthenticated)
+  const initAuth = useSoftwareAuthStore((state) => state.initAuth)
+
+  // Bug2 修复：应用启动时调用 initAuth() 检查本地授权
+  useEffect(() => {
+    initAuth()
+  }, [initAuth])
+
+  // Bug4 修复：用 useCallback 保持回调引用稳定，确保能精确移除监听器
+  const handleAuthInvalid = useCallback(() => {
+    setSoftwareAuthenticated(false)
+  }, [setSoftwareAuthenticated])
+
+  const handleAuthVerified = useCallback(() => {
+    // 心跳验证成功，无需额外操作
+  }, [])
+
+  useEffect(() => {
+    window.electronAPI.onAuthInvalid(handleAuthInvalid)
+    window.electronAPI.onAuthVerified(handleAuthVerified)
+
+    return () => {
+      window.electronAPI.offAuthInvalid(handleAuthInvalid)
+      window.electronAPI.offAuthVerified(handleAuthVerified)
+    }
+  }, [handleAuthInvalid, handleAuthVerified])
+
+  // Bug2/9 修复：启动时显示检查中状态，避免 AuthPage 闪烁
+  if (isCheckingAuth) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-orange-50 to-orange-100 flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+          <p className="text-gray-600 text-sm">正在初始化...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // 软件未授权时显示授权页面
+  if (!isSoftwareAuthenticated) {
+    return (
+      <AuthPage onAuthSuccess={() => setSoftwareAuthenticated(true)} />
+    )
+  }
+
   return (
     <HashRouter>
       <Toast />

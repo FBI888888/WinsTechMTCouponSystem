@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Optional, List
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
+from sqlalchemy.exc import IntegrityError
 
 from app.database import SessionLocal
 from app.models.account import MTAccount, AccountStatus
@@ -21,6 +22,7 @@ from app.models.log import ScheduledTaskLog
 from app.models.config import SystemConfig
 from app.config import settings
 from app.utils.encryption import decrypt_token
+from app.utils.order_status import normalize_order_status_bucket
 from app.services.notification import send_wechat_notification
 
 logger = logging.getLogger(__name__)
@@ -36,9 +38,19 @@ class ScheduledTaskService:
 
     def __init__(self):
         self.request_interval = settings.SCAN_REQUEST_INTERVAL
-        self.node_path = os.getenv("NODE_PATH", "node")
+        self.query_concurrency = max(1, settings.SCAN_COUPON_QUERY_CONCURRENCY)
+        self.query_batch_size = max(self.query_concurrency, settings.SCAN_COUPON_QUERY_BATCH_SIZE)
+        self.node_path = settings.NODE_PATH or os.getenv("NODE_PATH", "node")
         base_dir = os.path.dirname(os.path.abspath(__file__))
         self.script_path = os.path.join(base_dir, "meituanBackendApi.cjs")
+        self._node_workers = [
+            {"process": None, "lock": asyncio.Lock(), "stderr_task": None}
+            for _ in range(self.query_concurrency)
+        ]
+        self._node_worker_pool_lock = asyncio.Lock()
+        self._node_worker_cursor = 0
+        self._node_worker_cursor_lock = asyncio.Lock()
+        self._node_request_id = 0
 
     async def check_account_validity(self, account: MTAccount) -> bool:
         """
@@ -122,6 +134,37 @@ class ScheduledTaskService:
 
         return [], False
 
+    def _extract_order_identity(self, order: dict) -> tuple[str, str]:
+        order_id = str(order.get("orderid", "") or order.get("stringOrderId", "") or "").strip()
+        order_view_id = str(order.get("stringOrderId", "") or order.get("orderid", "") or "").strip()
+        return order_id, (order_view_id or order_id)
+
+    def _apply_order_snapshot(
+        self,
+        order_record: Order,
+        account: MTAccount,
+        order: dict,
+        order_id: str,
+        order_view_id: str,
+        coupon_query_status: int,
+    ) -> None:
+        order_record.account_id = account.id
+        order_record.order_id = order_id
+        order_record.order_view_id = order_view_id
+        order_record.title = order.get("title", "")
+        order_record.order_amount = order.get("orderAmount")
+        order_record.order_status = order.get("tousestatus") or order.get("orderStatus")
+        order_record.order_status_bucket = normalize_order_status_bucket(
+            order_record.order_status,
+            order.get("showstatus", ""),
+        )
+        order_record.showstatus = order.get("showstatus", "")
+        order_record.catename = order.get("catename", "")
+        order_record.is_gift = order.get("catename") != "缇庨鍥㈣喘" and "绀肩墿" in (order.get("showstatus") or "")
+        order_record.order_pay_time = self._parse_order_time(order.get("ordertime"))
+        order_record.city_name = order.get("cityName", "")
+        order_record.coupon_query_status = coupon_query_status
+
     def filter_new_orders(self, db: Session, account: MTAccount, orders: List[dict]) -> List[dict]:
         """
         筛选未落库的订单
@@ -129,36 +172,50 @@ class ScheduledTaskService:
         if not orders:
             return []
 
-        # 批量查询已存在的订单
-        order_ids = [str(o.get("orderid", "") or o.get("stringOrderId", "")) for o in orders]
+        normalized_orders = []
+        seen_order_ids = set()
+        for order in orders:
+            order_id, _ = self._extract_order_identity(order)
+            if not order_id or order_id in seen_order_ids:
+                continue
+            seen_order_ids.add(order_id)
+            normalized_orders.append(order)
+
+        if not normalized_orders:
+            return []
+
         existing = db.query(Order.order_id).filter(
             Order.account_id == account.id,
-            Order.order_id.in_(order_ids)
+            Order.order_id.in_(list(seen_order_ids))
         ).all()
-        existing_ids = {e[0] for e in existing}
+        existing_ids = {row[0] for row in existing}
 
-        # 筛选新订单
-        new_orders = []
-        for order in orders:
-            order_id = str(order.get("orderid", "") or order.get("stringOrderId", ""))
-            if order_id and order_id not in existing_ids:
-                new_orders.append(order)
+        return [
+            order for order in normalized_orders
+            if self._extract_order_identity(order)[0] not in existing_ids
+        ]
 
-        return new_orders
+    def _normalize_coupon_result(self, raw_coupons: list) -> tuple[list, list]:
+        normalized_coupons = []
+        coupon_codes = []
+        seen_coupon_codes = set()
 
-    async def query_and_save_coupons(self, db: Session, account: MTAccount, order: dict) -> tuple:
-        """
-        查询订单券码并保存
-        Returns:
-            (status, detail) 元组
-            status: 'success'=成功, 'failed'=失败, 'wind_control'=风控且重试耗尽
-            detail: 成功时返回券码详情字典，失败时返回None
-        """
+        for coupon_info in raw_coupons or []:
+            coupon_code = str(coupon_info.get("coupon", "") or "").strip()
+            if not coupon_code or coupon_code in seen_coupon_codes:
+                continue
+            seen_coupon_codes.add(coupon_code)
+            normalized_coupons.append(coupon_info)
+            coupon_codes.append(coupon_code)
+
+        return normalized_coupons, coupon_codes
+
+    async def query_coupon_data(self, account: MTAccount, order: dict) -> tuple:
         WC_MAX_RETRIES = 3
         WC_WAIT_SECONDS = 10
 
-        order_view_id = str(order.get("stringOrderId", "") or order.get("orderid", ""))
-        if not order_view_id:
+        order_id, order_view_id = self._extract_order_identity(order)
+        if not order_id or not order_view_id:
             return "failed", None
 
         token = get_decrypted_token(account)
@@ -167,7 +224,6 @@ class ScheduledTaskService:
             try:
                 result = await self._call_meituan_api(token, order_view_id, account)
 
-                # 遇到风控（418）
                 if result.get("is_wind_control"):
                     if attempt < WC_MAX_RETRIES:
                         logger.warning(
@@ -176,117 +232,349 @@ class ScheduledTaskService:
                         )
                         await asyncio.sleep(WC_WAIT_SECONDS)
                         continue
-                    else:
-                        logger.warning(
-                            f"[风控] 订单 {order_view_id} 连续{WC_MAX_RETRIES}次遇到风控，跳过该订单"
-                        )
-                        return "wind_control", None
 
-                if not result.get("success"):
-                    logger.warning(f"Query coupons failed for order {order_view_id}: {result.get('error')}")
-                    return "failed", None
+                    logger.warning(
+                        f"[风控] 订单 {order_view_id} 连续{WC_MAX_RETRIES}次遇到风控，跳过该订单"
+                    )
+                    return "wind_control", None
 
-                coupons = result.get("coupons", [])
-                if not coupons:
-                    return "failed", None
+                raw_coupons = result.get("coupons", []) or []
+                normalized_coupons, coupon_codes = self._normalize_coupon_result(raw_coupons)
 
-                # 先保存订单
-                order_record = Order(
-                    account_id=account.id,
-                    order_id=order_view_id,
-                    order_view_id=order_view_id,
-                    title=order.get("title", ""),
-                    order_amount=order.get("orderAmount"),
-                    order_status=order.get("tousestatus") or order.get("orderStatus"),
-                    showstatus=order.get("showstatus", ""),
-                    catename=order.get("catename", ""),
-                    is_gift=order.get("catename") != "美食团购" and "礼物" in (order.get("showstatus") or ""),
-                    order_pay_time=self._parse_order_time(order.get("ordertime")),
-                    city_name=order.get("cityName", ""),
-                    coupon_query_status=1  # 成功
+                return "success" if result.get("success") else "failed", {
+                    "order_id": order_id,
+                    "order_view_id": order_view_id,
+                    "order": order,
+                    "result": result,
+                    "raw_coupons": raw_coupons,
+                    "normalized_coupons": normalized_coupons,
+                    "coupon_codes": coupon_codes,
+                }
+            except Exception as exc:
+                logger.error("Query coupons error for order %s: %s", order_view_id, exc)
+                return "failed", {
+                    "order_id": order_id,
+                    "order_view_id": order_view_id,
+                    "order": order,
+                    "result": {"success": False, "error": str(exc)},
+                    "raw_coupons": [],
+                    "normalized_coupons": [],
+                    "coupon_codes": [],
+                }
+
+        return "wind_control", None
+
+    def save_coupon_query_result(
+        self,
+        db: Session,
+        account: MTAccount,
+        query_status: str,
+        query_payload: dict | None,
+    ) -> tuple:
+        if query_status == "wind_control" or not query_payload:
+            return query_status, None
+
+        order = query_payload["order"]
+        order_id = query_payload["order_id"]
+        order_view_id = query_payload["order_view_id"]
+        result = query_payload["result"]
+        raw_coupons = query_payload["raw_coupons"]
+        normalized_coupons = query_payload["normalized_coupons"]
+        coupon_codes = query_payload["coupon_codes"]
+
+        try:
+            order_record = db.query(Order).filter(
+                and_(
+                    Order.account_id == account.id,
+                    Order.order_id == order_id,
                 )
+            ).first()
+            if order_record is None:
+                order_record = Order()
                 db.add(order_record)
-                db.flush()  # 获取order.id
 
-                # 保存券码
-                coupon_codes = []
-                for coupon_info in coupons:
+            self._apply_order_snapshot(
+                order_record=order_record,
+                account=account,
+                order=order,
+                order_id=order_id,
+                order_view_id=order_view_id,
+                coupon_query_status=1 if query_status == "success" and coupon_codes else 2,
+            )
+            db.flush()
+
+            if query_status != "success":
+                db.commit()
+                logger.warning(f"Query coupons failed for order {order_view_id}: {result.get('error')}")
+                return "failed", None
+
+            existing_coupons = {}
+            if coupon_codes:
+                existing_coupon_rows = db.query(Coupon).filter(
+                    Coupon.order_id == order_record.id,
+                    Coupon.coupon_code.in_(coupon_codes),
+                ).all()
+                existing_coupons = {
+                    str(coupon.coupon_code or "").strip(): coupon
+                    for coupon in existing_coupon_rows
+                    if coupon.coupon_code
+                }
+
+            for coupon_info in normalized_coupons:
+                coupon_code = str(coupon_info.get("coupon", "") or "").strip()
+                coupon_record = existing_coupons.get(coupon_code)
+                if coupon_record is None:
                     coupon_record = Coupon(
                         order_id=order_record.id,
                         account_id=account.id,
-                        coupon_code=coupon_info.get("coupon", ""),
-                        encode=coupon_info.get("encode", ""),
-                        coupon_status=coupon_info.get("order_status", ""),
-                        use_status=coupon_info.get("useStatus"),
-                        raw_data={"data": coupons}
+                        coupon_code=coupon_code,
                     )
                     db.add(coupon_record)
-                    coupon_codes.append(coupon_info.get("coupon", ""))
 
-                db.commit()
-                
-                # 返回详情
-                detail = {
-                    "order_id": order_view_id,
-                    "title": order.get("title", ""),
-                    "account_userid": account.userid,
-                    "coupons": coupon_codes
-                }
-                return "success", detail
+                coupon_record.order_id = order_record.id
+                coupon_record.account_id = account.id
+                coupon_record.coupon_code = coupon_code
+                coupon_record.encode = coupon_info.get("encode", "")
+                coupon_record.coupon_status = coupon_info.get("order_status", "")
+                coupon_record.use_status = coupon_info.get("useStatus")
+                coupon_record.raw_data = {"data": raw_coupons}
 
-            except Exception as e:
-                logger.error(f"Query and save coupons error for order {order_view_id}: {e}")
-                db.rollback()
+            db.commit()
+
+            if not coupon_codes:
                 return "failed", None
 
-        return "wind_control", None  # Should not reach here
+            detail = {
+                "order_id": order_id,
+                "order_view_id": order_view_id,
+                "title": order.get("title", ""),
+                "account_userid": account.userid,
+                "coupons": coupon_codes,
+            }
+            return "success", detail
+        except IntegrityError as exc:
+            logger.warning(
+                "Integrity conflict while saving coupons for account_id=%s order_id=%s: %s",
+                account.id,
+                order_id,
+                exc,
+            )
+            db.rollback()
+            return "failed", None
+        except Exception as exc:
+            logger.error("Save coupon query result error for order %s: %s", order_view_id, exc)
+            db.rollback()
+            return "failed", None
+
+    async def query_and_save_coupons(self, db: Session, account: MTAccount, order: dict) -> tuple:
+        query_status, query_payload = await self.query_coupon_data(account, order)
+        return self.save_coupon_query_result(db, account, query_status, query_payload)
+
+    def _iter_order_batches(self, orders: List[dict]) -> List[List[dict]]:
+        return [
+            orders[index:index + self.query_batch_size]
+            for index in range(0, len(orders), self.query_batch_size)
+        ]
+
+    async def process_orders_with_pipeline(self, db: Session, account: MTAccount, orders: List[dict]) -> dict:
+        consecutive_wind_control = 0
+        max_consecutive_wind_control = 3
+        saved_count = 0
+        scan_details = []
+        is_wind_control = False
+
+        if not orders:
+            return {
+                "coupons_saved": 0,
+                "scan_details": [],
+                "is_wind_control": False,
+            }
+
+        for batch in self._iter_order_batches(orders):
+            batch_results = await asyncio.gather(
+                *(self.query_coupon_data(account, order) for order in batch)
+            )
+
+            for order, (query_status, query_payload) in zip(batch, batch_results):
+                result, detail = self.save_coupon_query_result(db, account, query_status, query_payload)
+                if result == "success":
+                    saved_count += 1
+                    consecutive_wind_control = 0
+                    if detail:
+                        scan_details.append(detail)
+                elif result == "wind_control":
+                    consecutive_wind_control += 1
+                    logger.warning(
+                        "[scan_pipeline] account=%s consecutive_wind_control=%s order_id=%s",
+                        account.userid,
+                        consecutive_wind_control,
+                        self._extract_order_identity(order)[1],
+                    )
+                    if consecutive_wind_control >= max_consecutive_wind_control:
+                        is_wind_control = True
+                        break
+                else:
+                    consecutive_wind_control = 0
+
+            if is_wind_control:
+                break
+
+            await asyncio.sleep(self.request_interval)
+
+        return {
+            "coupons_saved": saved_count,
+            "scan_details": scan_details,
+            "is_wind_control": is_wind_control,
+        }
+
+    async def _drain_node_worker_stderr(self, process, worker_index: int) -> None:
+        if process is None or process.stderr is None:
+            return
+
+        try:
+            while True:
+                line = await process.stderr.readline()
+                if not line:
+                    break
+                message = line.decode("utf-8", errors="replace").rstrip()
+                if message:
+                    logger.debug("[meituan_node_worker:%s] %s", worker_index, message)
+        except Exception as exc:
+            logger.debug("Node worker stderr reader stopped for worker %s: %s", worker_index, exc)
+
+    async def _stop_node_worker(self, worker_index: int) -> None:
+        worker = self._node_workers[worker_index]
+        process = worker["process"]
+        worker["process"] = None
+
+        if process is None:
+            return
+
+        try:
+            if process.stdin is not None and not process.stdin.is_closing():
+                process.stdin.close()
+        except Exception:
+            pass
+
+        try:
+            if process.returncode is None:
+                process.terminate()
+                await asyncio.wait_for(process.wait(), timeout=5)
+        except Exception:
+            try:
+                process.kill()
+                await process.wait()
+            except Exception:
+                pass
+
+        stderr_task = worker["stderr_task"]
+        worker["stderr_task"] = None
+        if stderr_task is not None:
+            stderr_task.cancel()
+
+    async def _pick_node_worker_index(self) -> int:
+        async with self._node_worker_cursor_lock:
+            worker_index = self._node_worker_cursor
+            self._node_worker_cursor = (self._node_worker_cursor + 1) % len(self._node_workers)
+            return worker_index
+
+    async def _ensure_node_worker(self, worker_index: int):
+        worker = self._node_workers[worker_index]
+        process = worker["process"]
+        if process is not None and process.returncode is None:
+            return process
+
+        if not os.path.exists(self.script_path):
+            raise FileNotFoundError("Script not found")
+
+        async with self._node_worker_pool_lock:
+            process = worker["process"]
+            if process is not None and process.returncode is None:
+                return process
+
+            await self._stop_node_worker(worker_index)
+
+            process = await asyncio.create_subprocess_exec(
+                self.node_path,
+                self.script_path,
+                "serve",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            worker["process"] = process
+            worker["stderr_task"] = asyncio.create_task(self._drain_node_worker_stderr(process, worker_index))
+            logger.info("Started Meituan node worker worker_index=%s pid=%s", worker_index, process.pid)
+            return process
+
+    async def _call_node_worker(self, action: str, params: dict, timeout_seconds: float = 35.0) -> dict:
+        worker_index = await self._pick_node_worker_index()
+        worker = self._node_workers[worker_index]
+        async with worker["lock"]:
+            process = await self._ensure_node_worker(worker_index)
+            self._node_request_id += 1
+            request_id = self._node_request_id
+
+            payload = json.dumps(
+                {
+                    "request_id": request_id,
+                    "action": action,
+                    "params": params,
+                },
+                ensure_ascii=False,
+            ) + "\n"
+
+            try:
+                process.stdin.write(payload.encode("utf-8"))
+                await process.stdin.drain()
+                raw_line = await asyncio.wait_for(process.stdout.readline(), timeout=timeout_seconds)
+                if not raw_line:
+                    raise RuntimeError("Node worker exited before returning a result")
+
+                response = json.loads(raw_line.decode("utf-8").strip())
+                if response.get("request_id") != request_id:
+                    raise RuntimeError("Node worker response id mismatch")
+                return response.get("result", {})
+            except Exception:
+                await self._stop_node_worker(worker_index)
+                raise
 
     async def _call_meituan_api(self, token: str, order_id: str, account: MTAccount = None) -> dict:
         """调用Node.js脚本查询美团API"""
-        import subprocess
-
-        if not os.path.exists(self.script_path):
-            return {"success": False, "error": "Script not found"}
-
-        # 构建options，包含用户信息
         options = {}
         if account:
             options["userId"] = account.userid or ""
             options["openId"] = account.open_id or ""
-            options["unionId"] = ""  # 如果有unionId字段可以添加
+            options["unionId"] = ""
             options["uuid"] = account.csecuuid or "c34d9b03-7520-47e3-9d7c-17a3d930c48d"
 
-        args = json.dumps({
-            "token": token,
-            "orderId": order_id,
-            "options": options
-        })
-
         try:
-            def run_subprocess():
-                result = subprocess.run(
-                    ["node", self.script_path, "getCouponList", args],
-                    capture_output=True,
-                    timeout=30,
-                    encoding='utf-8',
-                    errors='replace'
-                )
-                if result.returncode != 0:
-                    return {"success": False, "error": result.stderr}
-                # 只取最后一行JSON
-                lines = result.stdout.strip().split('\n')
-                json_line = lines[-1] if lines else result.stdout
-                return json.loads(json_line)
-
-            result = await asyncio.to_thread(run_subprocess)
-            # 检测风控（418）
+            result = await self._call_node_worker(
+                "getCouponList",
+                {
+                    "token": token,
+                    "orderId": order_id,
+                    "options": options,
+                },
+            )
             if not result.get("success"):
                 error_msg = str(result.get("error", ""))
                 if result.get("isWindControl") or "418" in error_msg:
                     result["is_wind_control"] = True
             return result
         except Exception as e:
+            logger.error("Node worker call failed for order %s: %s", order_id, e)
             return {"success": False, "error": str(e)}
+
+    async def close(self) -> None:
+        from app.services.meituan.api import MeituanAPI
+
+        for worker_index in range(len(self._node_workers)):
+            worker = self._node_workers[worker_index]
+            async with worker["lock"]:
+                await self._stop_node_worker(worker_index)
+
+        await MeituanAPI.close()
 
     def _parse_order_time(self, timestamp: Optional[int]) -> Optional[datetime]:
         """解析订单时间"""
@@ -398,31 +686,15 @@ class ScheduledTaskService:
             logger.info(f"[扫描] 账号 {account.userid} 有 {len(new_orders)} 个新订单")
             stats["orders_found"] = len(new_orders)
 
-            # 4. 查询券码并保存
-            for order in new_orders:
-                result, detail = await self.query_and_save_coupons(db, account, order)
-                if result == "success":
-                    stats["coupons_saved"] += 1
-                    consecutive_wind_control = 0  # 成功后重置计数
-                    # 收集详情
-                    if detail:
-                        scan_details.append(detail)
-                elif result == "wind_control":
-                    consecutive_wind_control += 1
-                    logger.warning(
-                        f"[扫描] 账号 {account.userid} 连续{consecutive_wind_control}个订单遇到风控"
-                    )
-                    if consecutive_wind_control >= MAX_CONSECUTIVE_WIND_CONTROL:
-                        stats["is_wind_control"] = True
-                        logger.warning(
-                            f"[扫描] 账号 {account.userid} 连续{MAX_CONSECUTIVE_WIND_CONTROL}个订单遇到风控，跳过该账号剩余订单"
-                        )
-                        break
-                else:
-                    consecutive_wind_control = 0  # 非风控失败也重置计数
-
-                # 请求间隔
-                await asyncio.sleep(self.request_interval)
+            pipeline_result = await self.process_orders_with_pipeline(db, account, new_orders)
+            stats["coupons_saved"] += pipeline_result["coupons_saved"]
+            scan_details.extend(pipeline_result["scan_details"])
+            if pipeline_result["is_wind_control"]:
+                consecutive_wind_control = MAX_CONSECUTIVE_WIND_CONTROL
+                stats["is_wind_control"] = True
+                logger.warning(
+                    f"[扫描] 账号 {account.userid} 连续{MAX_CONSECUTIVE_WIND_CONTROL}个订单遇到风控，跳过该账号剩余订单"
+                )
 
             # 更新账号扫描时间
             account.last_scan_time = datetime.now()
@@ -441,6 +713,10 @@ class ScheduledTaskService:
             if scan_details:
                 task_log.scan_details = json.dumps(scan_details, ensure_ascii=False)
             db.commit()
+            from app.routers.orders import invalidate_order_list_count_cache
+            from app.routers.stats import invalidate_dashboard_stats_cache
+            invalidate_order_list_count_cache()
+            invalidate_dashboard_stats_cache()
 
             logger.info(f"[扫描] 账号 {account.userid} 扫描完成: {stats}")
 
@@ -571,36 +847,14 @@ class ScheduledTaskService:
                     logger.info(f"[定时任务] 账号 {account.userid} 有 {len(new_orders)} 个新订单")
                     stats["orders_found"] += len(new_orders)
 
-                    # 追踪账号内连续风控订单
-                    consecutive_wind_control_orders = 0
-                    MAX_CONSECUTIVE_WIND_CONTROL_ORDERS = 3
-
-                    # 5. 查询券码并保存
-                    for order in new_orders:
-                        result, detail = await self.query_and_save_coupons(db, account, order)
-                        if result == "success":
-                            stats["coupons_saved"] += 1
-                            consecutive_wind_control_orders = 0  # 成功后重置
-                            # 收集详情
-                            if detail:
-                                scan_details.append(detail)
-                        elif result == "wind_control":
-                            consecutive_wind_control_orders += 1
-                            logger.warning(
-                                f"[定时任务] 账号 {account.userid} 连续{consecutive_wind_control_orders}个订单遇到风控"
-                            )
-                            if consecutive_wind_control_orders >= MAX_CONSECUTIVE_WIND_CONTROL_ORDERS:
-                                logger.warning(
-                                    f"[定时任务] 账号 {account.userid} 连续{MAX_CONSECUTIVE_WIND_CONTROL_ORDERS}个订单遇到风控，跳过剩余订单"
-                                )
-                                # 将此账号标记为风控账号
-                                consecutive_wind_control_accounts += 1
-                                break
-                        else:
-                            consecutive_wind_control_orders = 0  # 非风控失败也重置
-
-                        # 请求间隔
-                        await asyncio.sleep(self.request_interval)
+                    pipeline_result = await self.process_orders_with_pipeline(db, account, new_orders)
+                    stats["coupons_saved"] += pipeline_result["coupons_saved"]
+                    scan_details.extend(pipeline_result["scan_details"])
+                    if pipeline_result["is_wind_control"]:
+                        logger.warning(
+                            f"[定时任务] 账号 {account.userid} 连续3个订单遇到风控，跳过剩余订单"
+                        )
+                        consecutive_wind_control_accounts += 1
 
                     # 更新账号检查时间
                     account.last_check_time = datetime.now()
@@ -627,6 +881,10 @@ class ScheduledTaskService:
             if scan_details:
                 task_log.scan_details = json.dumps(scan_details, ensure_ascii=False)
             db.commit()
+            from app.routers.orders import invalidate_order_list_count_cache
+            from app.routers.stats import invalidate_dashboard_stats_cache
+            invalidate_order_list_count_cache()
+            invalidate_dashboard_stats_cache()
 
             logger.info(f"[定时任务] 扫描完成: {stats}")
 

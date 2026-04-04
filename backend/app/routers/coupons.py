@@ -1,10 +1,14 @@
+import logging
+import time
 from typing import List
+from collections import defaultdict
 import subprocess
 import json
 import os
 import asyncio
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.user import User
@@ -27,6 +31,8 @@ from app.services.coupon_change_service import (
 )
 
 router = APIRouter(prefix="/api/coupons", tags=["coupons"])
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 async def call_meituan_api(token: str, order_id: str, options: dict = None) -> dict:
@@ -38,8 +44,7 @@ async def call_meituan_api(token: str, order_id: str, options: dict = None) -> d
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     script_path = os.path.join(base_dir, "services", "meituan", "meituanBackendApi.cjs")
 
-    print(f"[DEBUG] Script path: {script_path}")
-    print(f"[DEBUG] Script exists: {os.path.exists(script_path)}")
+    logger.debug("[coupon_backend] script_path=%s exists=%s", script_path, os.path.exists(script_path))
 
     if not os.path.exists(script_path):
         raise Exception(f"Script not found: {script_path}")
@@ -50,7 +55,7 @@ async def call_meituan_api(token: str, order_id: str, options: dict = None) -> d
         "options": options
     })
 
-    print(f"[DEBUG] Calling Node.js with orderId: {order_id}")
+    logger.debug("[coupon_backend] calling_node order_id=%s", order_id)
 
     try:
         # 在线程池中运行同步的subprocess
@@ -62,9 +67,9 @@ async def call_meituan_api(token: str, order_id: str, options: dict = None) -> d
                 encoding='utf-8',
                 errors='replace'
             )
-            print(f"[DEBUG] Node.js returncode: {result.returncode}")
-            print(f"[DEBUG] Node.js stdout: {result.stdout[:500] if result.stdout else 'empty'}")
-            print(f"[DEBUG] Node.js stderr: {result.stderr[:500] if result.stderr else 'empty'}")
+            logger.debug("[coupon_backend] node_returncode=%s", result.returncode)
+            logger.debug("[coupon_backend] node_stdout=%s", result.stdout[:500] if result.stdout else 'empty')
+            logger.debug("[coupon_backend] node_stderr=%s", result.stderr[:500] if result.stderr else 'empty')
             if result.returncode != 0:
                 raise Exception(f"Node.js error: {result.stderr}")
 
@@ -80,6 +85,296 @@ async def call_meituan_api(token: str, order_id: str, options: dict = None) -> d
         raise Exception("API timeout")
     except json.JSONDecodeError as e:
         raise Exception(f"Parse error: {e}")
+
+
+async def _query_coupons_backend_grouped(
+    request: CouponQueryRequest,
+    db: Session,
+) -> List[CouponBackendQueryResponse]:
+    started_at = time.perf_counter()
+    coupon_results = batch_find_coupons_by_codes(db, request.coupon_codes)
+    unique_input_codes = len(dict.fromkeys(code for code in request.coupon_codes if code))
+
+    order_ids = {
+        result["coupon"].order_id
+        for result in coupon_results.values()
+        if result.get("coupon")
+    }
+    coupon_ids = {
+        result["coupon"].id
+        for result in coupon_results.values()
+        if result.get("coupon")
+    }
+
+    orders = db.query(Order).filter(Order.id.in_(order_ids)).all() if order_ids else []
+    order_map = {order.id: order for order in orders}
+
+    account_ids = {order.account_id for order in orders if order.account_id}
+    accounts = db.query(MTAccount).filter(MTAccount.id.in_(account_ids)).all() if account_ids else []
+    account_map = {account.id: account for account in accounts}
+
+    coupons_by_order = defaultdict(list)
+    if order_ids:
+        for db_coupon in db.query(Coupon).filter(Coupon.order_id.in_(order_ids)).all():
+            coupons_by_order[db_coupon.order_id].append(db_coupon)
+
+    history_counts = {}
+    if coupon_ids:
+        history_counts = {
+            coupon_id: count
+            for coupon_id, count in db.query(
+                CouponHistory.coupon_id,
+                func.count(CouponHistory.id),
+            ).filter(
+                CouponHistory.coupon_id.in_(coupon_ids)
+            ).group_by(
+                CouponHistory.coupon_id
+            ).all()
+        }
+
+    order_coupons = defaultdict(list)
+    for code in request.coupon_codes:
+        result = coupon_results.get(code) or {}
+        coupon = result.get("coupon")
+        if coupon:
+            order_coupons[coupon.order_id].append(code)
+
+    order_api_context = {}
+    api_call_attempts = 0
+    api_call_successes = 0
+    skipped_order_groups = 0
+    applied_change_count = 0
+    for order_id in order_coupons:
+        order = order_map.get(order_id)
+        if not order:
+            skipped_order_groups += 1
+            continue
+
+        account = account_map.get(order.account_id)
+        if not account or not account.token:
+            skipped_order_groups += 1
+            continue
+
+        id_str = str(order.order_view_id or "")
+        is_gift_id = len(id_str) > 20 or id_str.startswith(("G", "g"))
+        display_order_id = "-" if is_gift_id else (order.order_view_id or "-")
+        default_gift_id = id_str if is_gift_id else "-"
+        query_order_id = id_str if is_gift_id else order.order_view_id
+
+        try:
+            api_call_attempts += 1
+            decrypted_token = decrypt_token(account.token)
+            options = {
+                "userId": account.userid or "",
+                "openId": account.open_id or "",
+                "uuid": account.csecuuid or "c34d9b03-7520-47e3-9d7c-17a3d930c48d",
+            }
+            api_result = await call_meituan_api(decrypted_token, query_order_id, options)
+        except Exception as exc:
+            order_api_context[order_id] = {
+                "status": "error",
+                "message": f"Backend query failed: {exc}",
+                "display_order_id": display_order_id,
+                "default_gift_id": default_gift_id,
+                "userid": account.userid,
+            }
+            continue
+
+        if not api_result.get("success") or not api_result.get("coupons"):
+            error_msg = api_result.get("error", "Unknown API error")
+            order_api_context[order_id] = {
+                "status": "api_error",
+                "message": f"Meituan API failed: {error_msg}",
+                "display_order_id": display_order_id,
+                "default_gift_id": default_gift_id,
+                "userid": account.userid,
+            }
+            continue
+
+        api_call_successes += 1
+        coupons_list = api_result["coupons"]
+        db_coupons = coupons_by_order.get(order_id, [])
+        detector = CouponChangeDetector(db_coupons, coupons_list)
+        detection_result = detector.detect_changes()
+        applied_change_count += len(detection_result["changes"])
+
+        if detection_result["changes"]:
+            apply_coupon_changes(
+                db,
+                order.id,
+                order.account_id,
+                detection_result["changes"]
+            )
+            db_coupons = db.query(Coupon).filter(Coupon.order_id == order_id).all()
+            coupons_by_order[order_id] = db_coupons
+
+        change_map = {
+            change["db_coupon"].id: change
+            for change in detection_result["changes"]
+        }
+        change_type = "none"
+        if detection_result["is_full_change"]:
+            change_type = "full"
+        elif detection_result["is_partial_change"]:
+            change_type = "partial"
+
+        order_api_context[order_id] = {
+            "status": "success",
+            "message": "Backend query succeeded",
+            "display_order_id": display_order_id,
+            "default_gift_id": default_gift_id,
+            "userid": account.userid,
+            "coupons_list": coupons_list,
+            "coupon_by_id": {db_coupon.id: db_coupon for db_coupon in db_coupons},
+            "change_map": change_map,
+            "change_type": change_type,
+        }
+
+    results = []
+    for code in request.coupon_codes:
+        result = coupon_results.get(code) or {}
+        coupon = result.get("coupon")
+        is_old_code = result.get("is_from_history", False)
+
+        if not coupon:
+            results.append(CouponBackendQueryResponse(
+                coupon_code=code,
+                status="not_found",
+                message="Coupon not found in database",
+            ))
+            continue
+
+        order = order_map.get(coupon.order_id)
+        if not order:
+            results.append(CouponBackendQueryResponse(
+                coupon_code=code,
+                current_coupon_code=coupon.coupon_code,
+                status="error",
+                message="Order not found",
+            ))
+            continue
+
+        account = account_map.get(order.account_id)
+        if not account or not account.token:
+            results.append(CouponBackendQueryResponse(
+                coupon_code=code,
+                current_coupon_code=coupon.coupon_code,
+                order_view_id=order.order_view_id,
+                status="error",
+                message="Account token not available",
+            ))
+            continue
+
+        context = order_api_context.get(order.id)
+        if not context:
+            results.append(CouponBackendQueryResponse(
+                coupon_code=code,
+                current_coupon_code=coupon.coupon_code,
+                order_view_id=order.order_view_id,
+                gift_id=coupon.gift_id or "-",
+                userid=account.userid,
+                coupon_status=coupon.coupon_status,
+                verify_time="",
+                verify_poi_name="",
+                status="error",
+                message="Order query context not available",
+                is_old_code=is_old_code,
+                code_changed=False,
+                change_type="none",
+                change_count=history_counts.get(coupon.id, 0),
+            ))
+            continue
+
+        if context["status"] != "success":
+            results.append(CouponBackendQueryResponse(
+                coupon_code=code,
+                current_coupon_code=coupon.coupon_code,
+                order_view_id=context["display_order_id"],
+                gift_id=coupon.gift_id or context["default_gift_id"],
+                userid=context["userid"],
+                coupon_status=coupon.coupon_status,
+                verify_time="",
+                verify_poi_name="",
+                status=context["status"],
+                message=context["message"],
+                is_old_code=is_old_code,
+                code_changed=False,
+                change_type="none",
+                change_count=history_counts.get(coupon.id, 0),
+            ))
+            continue
+
+        current_coupon = context["coupon_by_id"].get(coupon.id, coupon)
+        matched = None
+        for api_coupon in context["coupons_list"]:
+            api_code = api_coupon.get("coupon") or api_coupon.get("coupon_code")
+            if api_code == current_coupon.coupon_code or api_coupon.get("encode") == current_coupon.encode:
+                matched = api_coupon
+                break
+
+        change = context["change_map"].get(coupon.id)
+        code_changed = change is not None
+        old_coupon_code = change["old_code"] if change else None
+        change_count = history_counts.get(coupon.id, 0) + (1 if code_changed else 0)
+        display_gift_id = current_coupon.gift_id or context["default_gift_id"]
+
+        if matched:
+            results.append(CouponBackendQueryResponse(
+                coupon_code=code,
+                current_coupon_code=current_coupon.coupon_code,
+                order_view_id=context["display_order_id"],
+                gift_id=display_gift_id,
+                userid=context["userid"],
+                coupon_status=matched.get("order_status", ""),
+                verify_time=matched.get("verifyTime", ""),
+                verify_poi_name=matched.get("verifyPoiName", ""),
+                status="found",
+                message=context["message"],
+                is_old_code=is_old_code,
+                code_changed=code_changed,
+                change_type=context["change_type"],
+                old_coupon_code=old_coupon_code,
+                change_count=change_count,
+            ))
+        else:
+            results.append(CouponBackendQueryResponse(
+                coupon_code=code,
+                current_coupon_code=current_coupon.coupon_code,
+                order_view_id=context["display_order_id"],
+                gift_id=display_gift_id,
+                userid=context["userid"],
+                coupon_status=current_coupon.coupon_status,
+                verify_time="",
+                verify_poi_name="",
+                status="partial",
+                message="Coupon not matched in latest order result",
+                is_old_code=is_old_code,
+                code_changed=code_changed,
+                change_type=context["change_type"],
+                old_coupon_code=old_coupon_code,
+                change_count=change_count,
+            ))
+
+    status_counts = defaultdict(int)
+    for result in results:
+        status_counts[result.status] += 1
+
+    duration_ms = (time.perf_counter() - started_at) * 1000
+    logger.info(
+        "[P0][query_backend_grouped] input_count=%s unique_input_count=%s matched_order_count=%s grouped_order_count=%s api_call_attempts=%s api_call_successes=%s skipped_order_groups=%s applied_change_count=%s result_statuses=%s duration_ms=%.2f",
+        len(request.coupon_codes),
+        unique_input_codes,
+        len(order_ids),
+        len(order_coupons),
+        api_call_attempts,
+        api_call_successes,
+        skipped_order_groups,
+        applied_change_count,
+        dict(status_counts),
+        duration_ms,
+    )
+
+    return results
 
 
 @router.get("", response_model=List[CouponResponse])
@@ -120,8 +415,6 @@ def query_coupons(
     """
     if not request.coupon_codes:
         return []
-
-    # 使用新的批量查询方法，同时匹配当前券码和历史旧券码
     coupon_results = batch_find_coupons_by_codes(db, request.coupon_codes)
 
     # 收集所有需要的 order_id 和 account_id
@@ -228,228 +521,12 @@ async def query_coupons_backend(
     current_user: User = Depends(get_current_user)
 ):
     """
-    后端查询券码信息（支持变码检测和处理）
-    从数据库获取账号信息后，后端调用美团API获取最新券码状态
-    自动检测券码变更并记录历史
+    Backend coupon query with grouped order-level API calls.
     """
     if not request.coupon_codes:
         return []
 
-    # 使用新的批量查询方法
-    coupon_results = batch_find_coupons_by_codes(db, request.coupon_codes)
-
-    # 收集所有需要的 order_id
-    order_ids = set()
-    for code, result in coupon_results.items():
-        if result['coupon']:
-            order_ids.add(result['coupon'].order_id)
-
-    # 批量查询订单
-    orders = db.query(Order).filter(Order.id.in_(order_ids)).all() if order_ids else []
-    order_map = {o.id: o for o in orders}
-
-    # 批量查询账号
-    account_ids = set(o.account_id for o in orders if o.account_id)
-    accounts = db.query(MTAccount).filter(MTAccount.id.in_(account_ids)).all() if account_ids else []
-    account_map = {a.id: a for a in accounts}
-
-    # 按订单分组券码，用于变码检测
-    order_coupons = {}  # {order_id: [coupon_codes]}
-
-    for code in request.coupon_codes:
-        result = coupon_results.get(code)
-        if result and result['coupon']:
-            order_id = result['coupon'].order_id
-            if order_id not in order_coupons:
-                order_coupons[order_id] = []
-            order_coupons[order_id].append(code)
-
-    # 构建结果
-    results = []
-
-    for code in request.coupon_codes:
-        result = coupon_results.get(code) or {}
-        coupon = result.get('coupon')
-        is_old_code = result.get('is_from_history', False)
-        history = result.get('history')
-
-        if not coupon:
-            results.append(CouponBackendQueryResponse(
-                coupon_code=code,
-                status="not_found",
-                message="券码不存在于数据库"
-            ))
-            continue
-
-        order = order_map.get(coupon.order_id)
-        if not order:
-            results.append(CouponBackendQueryResponse(
-                coupon_code=code,
-                current_coupon_code=coupon.coupon_code,
-                status="error",
-                message="订单不存在"
-            ))
-            continue
-
-        account = account_map.get(order.account_id)
-        if not account or not account.token:
-            results.append(CouponBackendQueryResponse(
-                coupon_code=code,
-                current_coupon_code=coupon.coupon_code,
-                order_view_id=order.order_view_id,
-                status="error",
-                message="账号不存在或缺少token"
-            ))
-            continue
-
-        # 通过位数判断订单号和礼物号
-        id_str = str(order.order_view_id or '')
-        is_gift_id = len(id_str) > 20 or id_str.startswith(('G', 'g'))
-
-        display_order_id = '-' if is_gift_id else (order.order_view_id or '-')
-        display_gift_id = id_str if is_gift_id else (coupon.gift_id or '-')
-
-        # 确定查询用的订单号
-        query_order_id = id_str if is_gift_id else order.order_view_id
-
-        # 获取历史变更次数
-        change_count = db.query(CouponHistory).filter(
-            CouponHistory.coupon_id == coupon.id
-        ).count()
-
-        # 调用美团API获取最新券码状态
-        try:
-            decrypted_token = decrypt_token(account.token)
-            options = {
-                "userId": account.userid or "",
-                "openId": account.open_id or "",
-                "uuid": account.csecuuid or "c34d9b03-7520-47e3-9d7c-17a3d930c48d"
-            }
-            api_result = await call_meituan_api(decrypted_token, query_order_id, options)
-
-            if api_result.get("success") and api_result.get("coupons"):
-                coupons_list = api_result["coupons"]
-
-                # 获取该订单的所有券码，进行变码检测
-                db_coupons = db.query(Coupon).filter(
-                    Coupon.order_id == coupon.order_id
-                ).all()
-
-                # 使用变更检测器
-                detector = CouponChangeDetector(db_coupons, coupons_list)
-                detection_result = detector.detect_changes()
-
-                # 查找匹配的券码
-                matched = None
-                for c in coupons_list:
-                    api_code = c.get("coupon") or c.get("coupon_code")
-                    if api_code == coupon.coupon_code or c.get("encode") == coupon.encode:
-                        matched = c
-                        break
-
-                # 确定变更类型
-                code_changed = False
-                change_type = 'none'
-                old_coupon_code = None
-
-                # 检查当前券码是否有变更
-                for change in detection_result['changes']:
-                    if change['db_coupon'].id == coupon.id:
-                        code_changed = True
-                        old_coupon_code = change['old_code']
-                        break
-
-                if detection_result['is_full_change']:
-                    change_type = 'full'
-                elif detection_result['is_partial_change']:
-                    change_type = 'partial'
-
-                # 如果有变更，应用到数据库
-                if detection_result['changes']:
-                    apply_coupon_changes(
-                        db,
-                        order.id,
-                        order.account_id,
-                        detection_result['changes']
-                    )
-                    # 刷新coupon对象
-                    db.refresh(coupon)
-
-                if matched:
-                    results.append(CouponBackendQueryResponse(
-                        coupon_code=code,
-                        current_coupon_code=coupon.coupon_code,
-                        order_view_id=display_order_id,
-                        gift_id=display_gift_id,
-                        userid=account.userid,
-                        coupon_status=matched.get("order_status", ""),
-                        verify_time=matched.get("verifyTime", ""),
-                        verify_poi_name=matched.get("verifyPoiName", ""),
-                        status="found",
-                        message="后端API查询成功",
-                        is_old_code=is_old_code,
-                        code_changed=code_changed,
-                        change_type=change_type,
-                        old_coupon_code=old_coupon_code,
-                        change_count=change_count
-                    ))
-                else:
-                    # 券码未匹配但可能有变更
-                    results.append(CouponBackendQueryResponse(
-                        coupon_code=code,
-                        current_coupon_code=coupon.coupon_code,
-                        order_view_id=display_order_id,
-                        gift_id=display_gift_id,
-                        userid=account.userid,
-                        coupon_status=coupon.coupon_status,
-                        verify_time="",
-                        verify_poi_name="",
-                        status="partial",
-                        message="券码未在订单中找到，可能已变更",
-                        is_old_code=is_old_code,
-                        code_changed=code_changed,
-                        change_type=change_type,
-                        old_coupon_code=old_coupon_code,
-                        change_count=change_count
-                    ))
-            else:
-                # API调用失败，使用数据库中的状态
-                error_msg = api_result.get("error", "未知错误")
-                results.append(CouponBackendQueryResponse(
-                    coupon_code=code,
-                    current_coupon_code=coupon.coupon_code,
-                    order_view_id=display_order_id,
-                    gift_id=display_gift_id,
-                    userid=account.userid,
-                    coupon_status=coupon.coupon_status,
-                    verify_time="",
-                    verify_poi_name="",
-                    status="api_error",
-                    message=f"美团API调用失败: {error_msg}",
-                    is_old_code=is_old_code,
-                    code_changed=False,
-                    change_type='none',
-                    change_count=change_count
-                ))
-        except Exception as e:
-            results.append(CouponBackendQueryResponse(
-                coupon_code=code,
-                current_coupon_code=coupon.coupon_code,
-                order_view_id=display_order_id,
-                gift_id=display_gift_id,
-                userid=account.userid,
-                coupon_status=coupon.coupon_status,
-                verify_time="",
-                verify_poi_name="",
-                status="error",
-                message=f"查询异常: {str(e)}",
-                is_old_code=is_old_code,
-                code_changed=False,
-                change_type='none',
-                change_count=change_count
-            ))
-
-    return results
+    return await _query_coupons_backend_grouped(request, db)
 
 
 @router.post("/batch-update")

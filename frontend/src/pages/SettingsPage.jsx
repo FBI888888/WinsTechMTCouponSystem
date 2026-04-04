@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { settingsApi } from '../api'
 import { useDataStore } from '../stores/dataStore'
 import { useToastStore } from '../stores/toastStore'
+import { getErrorMessage, isAbortError } from '../utils/requestFeedback'
 
 function SettingsPage() {
   // 全局缓存
@@ -11,6 +12,8 @@ function SettingsPage() {
   const [configs, setConfigs] = useState([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const configsRequestIdRef = useRef(0)
+  const configsAbortControllerRef = useRef(null)
 
   const defaultConfigs = [
     { config_key: 'scan_interval', config_value: '30', config_type: 'number', category: 'scan', description: '扫描间隔（分钟）', is_public: false },
@@ -26,9 +29,14 @@ function SettingsPage() {
       setConfigs(settings)
       return
     }
+    const requestId = ++configsRequestIdRef.current
+    configsAbortControllerRef.current?.abort()
+    const abortController = new AbortController()
+    configsAbortControllerRef.current = abortController
     setLoading(true)
     try {
-      const response = await settingsApi.getAll()
+      const response = await settingsApi.getAll(undefined, { signal: abortController.signal })
+      if (requestId !== configsRequestIdRef.current) return
       const existingKeys = response.data.map(c => c.config_key)
       // Add missing default configs
       const allConfigs = [...response.data]
@@ -40,15 +48,26 @@ function SettingsPage() {
       setConfigs(allConfigs)
       setSettings(allConfigs)
     } catch (error) {
+      if (isAbortError(error)) return
+      if (requestId !== configsRequestIdRef.current) return
       console.error('Failed to load configs:', error)
       setConfigs(defaultConfigs)
     } finally {
-      setLoading(false)
+      if (configsAbortControllerRef.current === abortController) {
+        configsAbortControllerRef.current = null
+      }
+      if (requestId === configsRequestIdRef.current) {
+        setLoading(false)
+      }
     }
   }
 
   useEffect(() => {
     loadConfigs()
+    return () => {
+      configsAbortControllerRef.current?.abort()
+      configsRequestIdRef.current += 1
+    }
   }, [])
 
   const handleSave = async () => {
@@ -67,7 +86,7 @@ function SettingsPage() {
       toast.success('保存成功')
     } catch (error) {
       console.error('Save failed:', error)
-      toast.error('保存失败: ' + error.message)
+      toast.error('保存失败: ' + getErrorMessage(error, '未知错误'))
     } finally {
       setSaving(false)
     }
