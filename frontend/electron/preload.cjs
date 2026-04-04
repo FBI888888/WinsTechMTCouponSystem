@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 // Expose protected methods to renderer
 contextBridge.exposeInMainWorld('electronAPI', {
   // Token capture
-  startTokenCapture: () => ipcRenderer.invoke('start-token-capture'),
+  startTokenCapture: (port) => ipcRenderer.invoke('start-token-capture', port),
   stopTokenCapture: () => ipcRenderer.invoke('stop-token-capture'),
 
   // Account operations
@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const result = await ipcRenderer.invoke('api-get-orders', params)
     return result
   },
+  apiReturnGift: (params) => ipcRenderer.invoke('api-return-gift', params),
   // Cancel orders sync
   cancelOrdersSync: () => ipcRenderer.invoke('cancel-orders-sync'),
 

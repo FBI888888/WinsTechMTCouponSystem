@@ -1,6 +1,6 @@
 import logging
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
@@ -55,3 +55,23 @@ def get_db():
 def init_db():
     """Initialize database tables."""
     Base.metadata.create_all(bind=engine)
+    _ensure_orders_gift_return_columns()
+
+
+def _ensure_orders_gift_return_columns():
+    """Backfill new order columns for existing deployments without Alembic."""
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        existing_columns = {column["name"] for column in inspector.get_columns("orders")}
+
+        if "gift_return_status" not in existing_columns:
+            conn.execute(text("ALTER TABLE orders ADD COLUMN gift_return_status INT NOT NULL DEFAULT 0"))
+            logger.info("Added orders.gift_return_status column")
+
+        if "gift_return_message" not in existing_columns:
+            conn.execute(text("ALTER TABLE orders ADD COLUMN gift_return_message VARCHAR(255) NULL"))
+            logger.info("Added orders.gift_return_message column")
+
+        if "gift_return_updated_at" not in existing_columns:
+            conn.execute(text("ALTER TABLE orders ADD COLUMN gift_return_updated_at DATETIME NULL"))
+            logger.info("Added orders.gift_return_updated_at column")

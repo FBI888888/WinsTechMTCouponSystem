@@ -283,9 +283,9 @@ npm install
 npm run electron:build
 
 # 打包完成后，安装包位于：
-# Windows: dist-electron/MT Coupon System Setup 1.0.0.exe
-# macOS: dist-electron/MT Coupon System-1.0.0.dmg
-# Linux: dist-electron/MT Coupon System-1.0.0.AppImage
+# Windows: dist-electron/MT Coupon System Setup 1.2.0.exe
+# macOS: dist-electron/MT Coupon System-1.2.0.dmg
+# Linux: dist-electron/MT Coupon System-1.2.0.AppImage
 ```
 
 ### 2.4 分发方式
@@ -389,7 +389,7 @@ npm install
 npm run electron:build
 
 # 将新的安装包分发给用户
-# dist-electron/MT Coupon System Setup 1.0.0.exe
+# dist-electron/MT Coupon System Setup 1.2.0.exe
 ```
 
 用户需要：

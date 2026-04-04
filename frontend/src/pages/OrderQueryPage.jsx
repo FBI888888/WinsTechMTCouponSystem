@@ -201,16 +201,26 @@ function OrderQueryPage() {
     }
   }
 
-  const handleCopy = async (coupon) => {
-    const text = [
-      `券码：${coupon.coupon || coupon.encode || '-'}`,
-      `状态：${coupon.order_status || coupon.coupon_status || '-'}`,
-      `订单号：${orderId.trim()}`
-    ].join('\n')
+  const handleCopy = async (coupon, index) => {
+    const lines = []
+
+    if (coupon.coupon) lines.push(`券码：${coupon.coupon}`)
+    if (coupon.encode && coupon.encode !== coupon.coupon) lines.push(`编码：${coupon.encode}`)
+    lines.push(`状态：${coupon.order_status || coupon.coupon_status || '-'}`)
+    if (coupon.title) lines.push(`商品：${coupon.title}`)
+    if (coupon.verifyTime) lines.push(`核销时间：${coupon.verifyTime}`)
+    if (coupon.verifyPoiName) lines.push(`核销门店：${coupon.verifyPoiName}`)
+    lines.push(`订单号：${orderId.trim()}`)
+
+    const text = lines.join('\n')
 
     try {
       await navigator.clipboard.writeText(text)
-      toast.success('已复制')
+      const btn = document.getElementById(`order-copy-btn-${index}`)
+      if (btn) {
+        btn.textContent = '已复制'
+        setTimeout(() => { btn.textContent = '复制' }, 1500)
+      }
     } catch {
       toast.error('复制失败')
     }
@@ -339,7 +349,8 @@ function OrderQueryPage() {
                       </td>
                       <td className="px-4 py-3 text-sm">
                         <button
-                          onClick={() => handleCopy(coupon)}
+                          id={`order-copy-btn-${index}`}
+                          onClick={() => handleCopy(coupon, index)}
                           className="px-2 py-1 text-xs bg-blue-50 text-blue-600 rounded hover:bg-blue-100 flex items-center gap-1"
                         >
                           <Copy className="w-3 h-3" />

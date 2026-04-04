@@ -65,24 +65,30 @@ function AccountPage() {
 
   // 解析粘贴的文本格式
   // 支持多行格式：Token: xxx\nOpenId: xxx\n...
-  // 支持单行格式：Token: xxx OpenId: xxx OpenIdCipher: xxx CsecUUID: xxx UserId: xxx
+  // 支持单行格式：Token: xxx OpenId: xxx OpenIdCipher: xxx CsecUUID: xxx UserId: xxx UUID: xxx CityId: xxx Position: xxx
   const parsePastedText = (text) => {
     const result = {
       token: '',
       openId: '',
       openIdCipher: '',
       csecuuid: '',
-      userid: ''
+      userid: '',
+      uuid: '',
+      ci: '',
+      mypos: ''
     }
     
     // 统一处理：将文本按空格或换行分割，然后匹配键值对
     // 使用正则匹配 "Key: Value" 格式，Value 可能包含空格直到下一个 Key: 或文本结束
     const patterns = [
-      { key: 'token', regex: /Token\s*:\s*([^\s]+(?:\s+(?!(?:Token|OpenId|OpenIdCipher|CsecUUID|UserId)\s*:)[^\s]+)*)/i },
+      { key: 'token', regex: /Token\s*:\s*([^\s]+(?:\s+(?!(?:Token|OpenId|OpenIdCipher|CsecUUID|UserId|UUID|CityId|Position)\s*:)[^\s]+)*)/i },
       { key: 'openId', regex: /OpenId\s*:\s*([^\s]+)/i },
       { key: 'openIdCipher', regex: /OpenIdCipher\s*:\s*([^\s]+)/i },
       { key: 'csecuuid', regex: /CsecUUID\s*:\s*([^\s]+)/i },
-      { key: 'userid', regex: /UserId\s*:\s*([^\s]+)/i }
+      { key: 'userid', regex: /UserId\s*:\s*([^\s]+)/i },
+      { key: 'uuid', regex: /UUID\s*:\s*([^\s]+)/i },
+      { key: 'ci', regex: /CityId\s*:\s*([^\s]+)/i },
+      { key: 'mypos', regex: /Position\s*:\s*([^\s]+)/i }
     ]
     
     for (const { key, regex } of patterns) {
@@ -97,6 +103,19 @@ function AccountPage() {
       return result
     }
     return null
+  }
+
+  const buildCapturedText = (data) => {
+    const lines = []
+    if (data.token) lines.push(`Token: ${data.token}`)
+    if (data.openId) lines.push(`OpenId: ${data.openId}`)
+    if (data.openIdCipher) lines.push(`OpenIdCipher: ${data.openIdCipher}`)
+    if (data.csecuuid) lines.push(`CsecUUID: ${data.csecuuid}`)
+    if (data.userid) lines.push(`UserId: ${data.userid}`)
+    if (data.uuid) lines.push(`UUID: ${data.uuid}`)
+    if (data.ci) lines.push(`CityId: ${data.ci}`)
+    if (data.mypos) lines.push(`Position: ${data.mypos}`)
+    return lines.join('\n')
   }
 
   // 构建账号URL
@@ -141,7 +160,7 @@ function AccountPage() {
       csecuuid = pastedData.csecuuid
       accountUrl = buildAccountUrl(userid, token)
     } else {
-      showMessage('error', '请粘贴 Token/OpenId/OpenIdCipher/CsecUUID/UserId 格式的文本')
+      showMessage('error', '请粘贴 Token/OpenId/OpenIdCipher/CsecUUID/UserId/UUID/CityId/Position 格式的文本')
       return
     }
 
@@ -387,20 +406,25 @@ function AccountPage() {
     }
 
     setTokenCapturing(true)
-    showMessage('success', '开始抓取Token，请打开美团联盟任意小程序链接...')
+    showMessage('success', '开始抓取Token，请打开微信中的美团相关小程序页面...')
 
     try {
       const result = await window.electronAPI.startTokenCapture()
-      if (result.success && result.url) {
-        setUrl(result.url)
-        setLastCaptured({
-          userid: String(result.userid || ''),
+      if (result.success && result.token) {
+        const capturedData = {
+          userid: String(result.userid || result.authHeaders?.userId || ''),
           token: String(result.token || ''),
-          csecuuid: String(result.csecuuid || ''),
-          openId: String(result.openId || ''),
-          openIdCipher: String(result.openIdCipher || '')
-        })
-        showMessage('success', '抓取成功，URL已填入输入框')
+          csecuuid: String(result.csecuuid || result.authHeaders?.csecuuid || ''),
+          openId: String(result.openId || result.authHeaders?.openId || ''),
+          openIdCipher: String(result.openIdCipher || result.authHeaders?.openIdCipher || ''),
+          uuid: String(result.uuid || result.authHeaders?.uuid || ''),
+          ci: String(result.ci || result.authHeaders?.ci || ''),
+          mypos: String(result.mypos || result.authHeaders?.mypos || '')
+        }
+
+        setUrl(buildCapturedText(capturedData))
+        setLastCaptured(capturedData)
+        showMessage('success', '抓取成功，认证信息已填入输入框')
       } else if (result.stopped) {
         showMessage('success', '已停止抓取')
       } else {
@@ -706,7 +730,7 @@ function AccountPage() {
               setUrl(e.target.value)
               setLastCaptured(null)
             }}
-            placeholder="粘贴 Token/OpenId/OpenIdCipher/CsecUUID/UserId 格式文本"
+            placeholder="粘贴 Token/OpenId/OpenIdCipher/CsecUUID/UserId/UUID/CityId/Position 格式文本"
             className="flex-[3] min-w-[300px] px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
           />
           <button onClick={handleAddOrUpdate} className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 flex items-center gap-2">

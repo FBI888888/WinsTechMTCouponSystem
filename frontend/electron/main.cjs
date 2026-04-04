@@ -257,12 +257,12 @@ app.on('before-quit', () => {
 // IPC Handlers
 
 // Token capture
-ipcMain.handle('start-token-capture', async () => {
+ipcMain.handle('start-token-capture', async (event, port) => {
   log('INFO', 'Starting token capture')
   if (!proxyServer) {
     return { success: false, error: 'Proxy not initialized' }
   }
-  return proxyServer.startCapture()
+  return proxyServer.startCapture(port || 8898)
 })
 
 ipcMain.handle('stop-token-capture', async () => {
@@ -398,6 +398,17 @@ ipcMain.handle('cancel-orders-sync', async () => {
     return { success: true }
   }
   return { success: false, message: 'No active sync operation' }
+})
+
+ipcMain.handle('api-return-gift', async (event, { token, giftId, options }) => {
+  try {
+    const MeituanAPI = require('./services/meituanAPI.cjs')
+    const result = await MeituanAPI.returnGift(token, giftId, options)
+    return { success: true, data: result }
+  } catch (error) {
+    log('ERROR', `Return gift error: ${error.message}`)
+    return { success: false, error: error.message }
+  }
 })
 
 // Export excel

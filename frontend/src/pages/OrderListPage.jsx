@@ -1,8 +1,9 @@
 ﻿import { useState, useEffect, useRef } from 'react'
 import { ordersApi, accountsApi } from '../api'
-import { Download, Search, Database, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Download, Search, Database, ChevronLeft, ChevronRight, Gift } from 'lucide-react'
 import { useDataStore } from '../stores/dataStore'
 import { useToastStore } from '../stores/toastStore'
+import { confirm } from '../stores/confirmStore'
 import { formatCountSummary, getErrorMessage, getResultErrorMessage, isAbortError } from '../utils/requestFeedback'
 import { createErrorQueryResult, createSuccessQueryResult, QUERY_RESULT_STATUS } from '../utils/queryResult'
 
@@ -60,6 +61,7 @@ function OrderListPage() {
   const [couponQueryResult, setCouponQueryResult] = useState(null)
   const [couponQueryMeta, setCouponQueryMeta] = useState(null)
   const [couponQueryLoading, setCouponQueryLoading] = useState(false)
+  const [giftReturnStatusMap, setGiftReturnStatusMap] = useState({})
   const orderPageCursorRef = useRef({})
   const couponQueryCacheRef = useRef({})
   const couponQueryInFlightRef = useRef({})
@@ -84,6 +86,151 @@ function OrderListPage() {
   const getCouponQueryCacheKey = (order) => {
     if (!order) return ''
     return `${selectedAccountId}:${order.id}:${order.order_view_id || order.order_id || ''}`
+  }
+
+  const getGiftOrderId = (order) => {
+    if (!order) return ''
+    const rawId = order.order_view_id || order.order_id || ''
+    return String(rawId).trim()
+  }
+
+  const getGiftReturnStatusKey = (order) => {
+    if (!order) return ''
+    return `${selectedAccountId}:${order.id}:${getGiftOrderId(order)}`
+  }
+
+  const isGiftOrder = (order) => {
+    const orderIdStr = getGiftOrderId(order)
+    if (!orderIdStr) return false
+    return Boolean(order?.is_gift) || /^[a-zA-Z]/.test(orderIdStr) || orderIdStr.length > 20
+  }
+
+  const getGiftReturnRiskUrl = (payload) => {
+    if (!payload) return ''
+    return payload?.customData?.generalPageUrl || payload?.data?.customData?.generalPageUrl || ''
+  }
+
+  const isGiftReturnRiskControl = (payload, fallbackMessage = '') => {
+    const messageText = [payload?.message, payload?.msg, fallbackMessage]
+      .filter(Boolean)
+      .join(' ')
+    return (
+      payload?.yodaCode === 406 ||
+      Boolean(getGiftReturnRiskUrl(payload)) ||
+      payload?.code === 403 ||
+      messageText.includes('风控') ||
+      messageText.includes('403') ||
+      messageText.includes('Forbidden')
+    )
+  }
+
+  const getGiftReturnErrorMessage = (payload, fallbackMessage = '') => {
+    if (!payload && fallbackMessage) return fallbackMessage
+
+    const message =
+      payload?.message ||
+      payload?.msg ||
+      payload?.error ||
+      payload?.errorMsg ||
+      fallbackMessage
+
+    if (!message) return '退还失败'
+    if (message.includes('参数') || message.includes('缺失')) return `退还失败: ${message}`
+    if (message.includes('token') || message.includes('Token')) return `退还失败: ${message}`
+    return message
+  }
+
+  const updateGiftReturnStatus = (order, status, message = '') => {
+    const key = getGiftReturnStatusKey(order)
+    if (!key) return
+    setGiftReturnStatusMap(prev => ({
+      ...prev,
+      [key]: {
+        status,
+        message,
+        updatedAt: Date.now()
+      }
+    }))
+  }
+
+  const getGiftReturnStatus = (order) => {
+    const key = getGiftReturnStatusKey(order)
+    const localStatus = key ? giftReturnStatusMap[key] : null
+    if (localStatus) return localStatus
+
+    switch (order?.gift_return_status) {
+      case 1:
+        return {
+          status: 'success',
+          message: order?.gift_return_message || '礼物已退还',
+          updatedAt: order?.gift_return_updated_at ? new Date(order.gift_return_updated_at).getTime() : 0
+        }
+      case 2:
+        return {
+          status: 'risk',
+          message: order?.gift_return_message || '触发风控，请完成验证后重试',
+          updatedAt: order?.gift_return_updated_at ? new Date(order.gift_return_updated_at).getTime() : 0
+        }
+      case 3:
+        return {
+          status: 'error',
+          message: order?.gift_return_message || '礼物退还失败',
+          updatedAt: order?.gift_return_updated_at ? new Date(order.gift_return_updated_at).getTime() : 0
+        }
+      case 4:
+        return {
+          status: 'pending',
+          message: order?.gift_return_message || '正在退还礼物...',
+          updatedAt: order?.gift_return_updated_at ? new Date(order.gift_return_updated_at).getTime() : 0
+        }
+      default:
+        return null
+    }
+  }
+
+  const getGiftReturnStatusView = (order) => {
+    if (!isGiftOrder(order)) {
+      return { text: '-', className: 'text-gray-300', title: '' }
+    }
+
+    const statusEntry = getGiftReturnStatus(order)
+    switch (statusEntry?.status) {
+      case 'pending':
+        return { text: '处理中', className: 'bg-blue-50 text-blue-700 animate-pulse', title: statusEntry.message || '正在退还礼物' }
+      case 'success':
+        return { text: '已退还', className: 'bg-green-50 text-green-700', title: statusEntry.message || '礼物已退还' }
+      case 'risk':
+        return { text: '风控', className: 'bg-amber-50 text-amber-700', title: statusEntry.message || '触发风控，请完成验证后重试' }
+      case 'error':
+        return { text: '失败', className: 'bg-red-50 text-red-700', title: statusEntry.message || '礼物退还失败' }
+      default:
+        return { text: '可退还', className: 'bg-gray-100 text-gray-600', title: '礼物订单，可通过右键菜单退还' }
+    }
+  }
+
+  const persistGiftReturnStatus = async (order, status, message = '') => {
+    const statusCodeMap = {
+      success: 1,
+      risk: 2,
+      error: 3,
+      pending: 4
+    }
+    const statusCode = statusCodeMap[status] || 0
+    if (!order?.id || !statusCode) return
+
+    await ordersApi.updateGiftReturnStatus({
+      order_ids: [order.id],
+      status: statusCode,
+      message
+    })
+  }
+
+  const persistGiftReturnStatusSafely = async (order, status, message = '') => {
+    try {
+      await persistGiftReturnStatus(order, status, message)
+    } catch (error) {
+      console.error(`Persist gift return ${status} status error:`, error)
+    }
   }
 
   const invalidateCouponQueryCache = ({ closeDialog = false } = {}) => {
@@ -290,6 +437,7 @@ function OrderListPage() {
   useEffect(() => {
     if (orderSelectedAccountId) {
       invalidateCouponQueryCache({ closeDialog: true })
+      setGiftReturnStatusMap({})
       resetOrderPaginationState()
       loadOrders(1, pageSize, true, 'reset')
     }
@@ -845,6 +993,102 @@ function OrderListPage() {
     await queryCouponForOrder(order, { source: 'context_menu' })
   }
 
+  const handleReturnGift = async () => {
+    if (!contextMenu.order) return
+
+    const order = contextMenu.order
+    const giftId = getGiftOrderId(order)
+    const currentGiftReturnStatus = getGiftReturnStatus(order)
+    closeContextMenu()
+
+    if (!giftId || !isGiftOrder(order)) {
+      toast.warning('当前订单不是礼物订单')
+      return
+    }
+
+    if (currentGiftReturnStatus?.status === 'pending') {
+      toast.info('这笔礼物订单正在处理中，请稍候')
+      return
+    }
+
+    const confirmed = await confirm(
+      `确定要退还礼物订单 ${giftId} 吗？此操作会向美团提交退还请求。`,
+      '退还礼物确认'
+    )
+    if (!confirmed) {
+      return
+    }
+
+    if (!selectedAccountId) {
+      toast.warning('请先选择账号')
+      return
+    }
+
+    const account = accounts.find(a => a.id === parseInt(selectedAccountId))
+    if (!account) {
+      toast.error('账号不存在')
+      return
+    }
+
+    if (!account.token) {
+      toast.error('当前账号缺少 Token，请先重新抓取并保存')
+      return
+    }
+
+    if (!account.userid) {
+      toast.error('当前账号缺少 UserId，请先重新抓取并保存')
+      return
+    }
+
+    try {
+      updateGiftReturnStatus(order, 'pending', '正在退还礼物...')
+      const result = await window.electronAPI.apiReturnGift({
+        token: account.token,
+        giftId,
+        options: {
+          userId: account.userid,
+          uuid: account.csecuuid || '',
+          openId: account.open_id || ''
+        }
+      })
+
+      if (result.success && result.data?.code === 0) {
+        const successMessage = result.data?.message || '礼物退还成功'
+        updateGiftReturnStatus(order, 'success', successMessage)
+        await persistGiftReturnStatusSafely(order, 'success', successMessage)
+        toast.success('礼物退还成功')
+        await loadOrders(ordersPage, ordersPageSize, true)
+      } else if (isGiftReturnRiskControl(result?.data, result?.error)) {
+        const riskUrl = getGiftReturnRiskUrl(result?.data)
+        const riskMessage = result?.data?.message || result?.data?.msg || result?.error || '退还礼物时触发风控'
+        updateGiftReturnStatus(order, 'risk', riskMessage)
+        await persistGiftReturnStatusSafely(order, 'risk', riskMessage)
+        if (riskUrl) {
+          window.open(riskUrl, '_blank')
+          toast.warning('触发风控，已打开验证页面，完成验证后请重试')
+        } else {
+          toast.warning('退还礼物时触发风控，请完成验证或更新 Token 后重试')
+        }
+      } else {
+        const errorMessage = getGiftReturnErrorMessage(result?.data, result?.error)
+        updateGiftReturnStatus(order, 'error', errorMessage)
+        await persistGiftReturnStatusSafely(order, 'error', errorMessage)
+        toast.error(errorMessage)
+      }
+    } catch (error) {
+      const errorMessage = getErrorMessage(error, '未知错误')
+      if (isGiftReturnRiskControl(null, errorMessage)) {
+        updateGiftReturnStatus(order, 'risk', errorMessage)
+        await persistGiftReturnStatusSafely(order, 'risk', errorMessage)
+        toast.warning('退还礼物时触发风控，请完成验证或更新 Token 后重试')
+      } else {
+        updateGiftReturnStatus(order, 'error', errorMessage)
+        await persistGiftReturnStatusSafely(order, 'error', errorMessage)
+        toast.error('退还失败: ' + errorMessage)
+      }
+    }
+  }
+
   // 点击其他地方关闭右键菜单
   useEffect(() => {
     const handleClick = () => closeContextMenu()
@@ -1134,6 +1378,7 @@ function OrderListPage() {
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">金额</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">下单时间</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">券码查询</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">礼物退还</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -1158,11 +1403,19 @@ function OrderListPage() {
                       {getQueryStatusText(order.coupon_query_status)}
                     </span>
                   </td>
+                  <td className="px-4 py-3 text-sm">
+                    <span
+                      title={getGiftReturnStatusView(order).title}
+                      className={`px-2 py-1 rounded-full text-xs font-medium ${getGiftReturnStatusView(order).className}`}
+                    >
+                      {getGiftReturnStatusView(order).text}
+                    </span>
+                  </td>
                 </tr>
               ))}
               {orders.length === 0 && (
                 <tr>
-                  <td colSpan="7" className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan="8" className="px-4 py-8 text-center text-gray-500">
                     暂无订单数据
                   </td>
                 </tr>
@@ -1252,6 +1505,15 @@ function OrderListPage() {
             <Search className="w-4 h-4" />
             查询券码
           </button>
+          {isGiftOrder(contextMenu.order) && (
+            <button
+              onClick={handleReturnGift}
+              className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+            >
+              <Gift className="w-4 h-4" />
+              退还礼物
+            </button>
+          )}
         </div>
       )}
 

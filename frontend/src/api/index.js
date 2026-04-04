@@ -68,6 +68,7 @@ export const ordersApi = {
   saveBatch: (data) => api.post('/api/orders/save-batch', data),
   saveCoupon: (data) => api.post('/api/orders/save-coupon', data),
   updateQueryStatus: (data) => api.post('/api/orders/update-query-status', data),
+  updateGiftReturnStatus: (data) => api.post('/api/orders/update-gift-return-status', data),
   getPendingCouponQuery: (params) => api.get('/api/orders/pending-coupon-query', { params }),
   queryOrderByOrderId: (data) => api.post('/api/orders/query-by-order-id', data)
 }

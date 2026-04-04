@@ -724,6 +724,48 @@ def update_query_status(
     return {"success": True, "updated": total_updated}
 
 
+@router.post("/update-gift-return-status")
+def update_gift_return_status(
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    批量更新订单的礼物退还状态。
+    data: { order_ids: [1, 2], status: 1, message: "礼物退还成功" }
+    status: 0=未处理, 1=成功, 2=风控, 3=失败, 4=处理中
+    """
+    order_ids = data.get("order_ids", [])
+    status_value = int(data.get("status", 0))
+    message = data.get("message")
+    normalized_message = str(message).strip()[:255] if message is not None else None
+
+    if not order_ids:
+        return {"success": True, "updated": 0}
+
+    update_values = {
+        Order.gift_return_status: status_value,
+        Order.gift_return_updated_at: datetime.now(),
+        Order.updated_at: datetime.now(),
+    }
+    update_values[Order.gift_return_message] = normalized_message
+
+    total_updated = 0
+    for i in range(0, len(order_ids), IN_QUERY_BATCH_SIZE):
+        batch_ids = order_ids[i:i + IN_QUERY_BATCH_SIZE]
+        updated = db.query(Order).filter(Order.id.in_(batch_ids)).update(
+            update_values,
+            synchronize_session=False
+        )
+        total_updated += updated
+
+    db.commit()
+    invalidate_order_list_count_cache()
+    invalidate_dashboard_stats_cache()
+
+    return {"success": True, "updated": total_updated}
+
+
 @router.post("/query-by-order-id")
 async def query_order_by_order_id(
     data: dict,

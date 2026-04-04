@@ -26,6 +26,9 @@ class Order(Base):
     city_name = Column(String(50))
     consume_city_name = Column(String(50))
     coupon_query_status = Column(Integer, default=0)
+    gift_return_status = Column(Integer, default=0)
+    gift_return_message = Column(String(255))
+    gift_return_updated_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 

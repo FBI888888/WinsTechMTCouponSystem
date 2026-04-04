@@ -96,7 +96,7 @@ function Sidebar() {
       </nav>
 
       <div className="p-4 border-t border-gray-100">
-        <p className="text-xs text-gray-400 text-center">v1.0.0</p>
+        <p className="text-xs text-gray-400 text-center">v1.2.0</p>
       </div>
     </aside>
   )

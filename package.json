@@ -1,6 +1,6 @@
 {
   "name": "WinsTechMTCouponSystem",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "WinsTech MT券码库管理系统 - 支持券码变码检测与历史追溯",
   "main": "index.js",
   "scripts": {

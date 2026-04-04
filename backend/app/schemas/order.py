@@ -20,6 +20,9 @@ class OrderBase(BaseModel):
     city_name: Optional[str] = None
     consume_city_name: Optional[str] = None
     coupon_query_status: Optional[int] = 0
+    gift_return_status: Optional[int] = 0
+    gift_return_message: Optional[str] = None
+    gift_return_updated_at: Optional[datetime] = None
 
 
 class OrderResponse(OrderBase):

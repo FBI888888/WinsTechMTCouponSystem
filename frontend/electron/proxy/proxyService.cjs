@@ -114,8 +114,6 @@ class ProxyService {
         { stdio: 'pipe', windowsHide: true, encoding: 'utf8' }
       )
       if (checkResult.includes('MtRebateTools CA')) {
-        // 提取certutil输出中的证书哈希（兼容中英文Windows）
-        // 中文: 证书哈希(sha1): xxx   英文: Cert Hash(sha1): xxx
         const hashMatch = checkResult.match(/\(sha1\)\s*[:：]\s*([a-fA-F0-9\s]+)/i)
         if (hashMatch) {
           const systemFingerprint = hashMatch[1].replace(/\s+/g, '').toLowerCase()
@@ -173,6 +171,113 @@ class ProxyService {
     }
   }
 
+  isTargetDomain(hostname = '') {
+    return hostname.includes('meituan.com') ||
+      hostname.includes('dianping.com') ||
+      hostname.includes('maoyan.com') ||
+      hostname.includes('neixin.cn')
+  }
+
+  safeDecode(value) {
+    try {
+      return decodeURIComponent(value)
+    } catch (e) {
+      return value
+    }
+  }
+
+  extractUrlParamsFromRequestLine(firstLine = '') {
+    const urlMatch = firstLine.match(/(?:GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\s+(\S+)/)
+    if (!urlMatch) {
+      return {}
+    }
+
+    const requestPath = urlMatch[1]
+    const queryIndex = requestPath.indexOf('?')
+    if (queryIndex === -1) {
+      return {}
+    }
+
+    const queryString = requestPath.substring(queryIndex + 1)
+    const params = {}
+    queryString.split('&').forEach((pair) => {
+      const [rawKey, ...rest] = pair.split('=')
+      if (!rawKey || rest.length === 0) {
+        return
+      }
+      const rawValue = rest.join('=')
+      params[this.safeDecode(rawKey)] = this.safeDecode(rawValue)
+    })
+
+    return params
+  }
+
+  extractAuthHeaders(lines = []) {
+    const result = {
+      token: '',
+      openId: '',
+      openIdCipher: '',
+      csecuuid: '',
+      userId: ''
+    }
+
+    lines.forEach((line) => {
+      if (!line.includes(':')) {
+        return
+      }
+
+      const colonIndex = line.indexOf(':')
+      const headerName = line.substring(0, colonIndex).trim().toLowerCase()
+      const headerValue = line.substring(colonIndex + 1).trim()
+      if (!headerValue) {
+        return
+      }
+
+      if (headerName === 'token') {
+        result.token = headerValue
+      } else if (headerName === 'openid') {
+        result.openId = headerValue
+      } else if (headerName === 'openidcipher') {
+        result.openIdCipher = headerValue
+      } else if (headerName === 'csecuuid') {
+        result.csecuuid = headerValue
+      } else if (headerName === 'csecuserid') {
+        result.userId = headerValue
+      }
+    })
+
+    return result
+  }
+
+  buildCaptureResult({ token = '', openId = '', openIdCipher = '', csecuuid = '', userId = '', urlParams = {} }) {
+    const resolvedUserId = userId || urlParams.userId || urlParams.userid || ''
+    const cityId = urlParams.ci || urlParams.cityId || urlParams.cityid || ''
+    const position = (urlParams.lat && urlParams.lng) ? `${urlParams.lat},${urlParams.lng}` : ''
+
+    return {
+      success: true,
+      url: `https://i.meituan.com/mttouch/page/account?cevent=imt%2Fhomepage%2Fmine&userId=${resolvedUserId}&token=${token}`,
+      userid: resolvedUserId,
+      token,
+      csecuuid,
+      openId,
+      openIdCipher,
+      uuid: urlParams.uuid || '',
+      ci: cityId,
+      mypos: position,
+      authHeaders: {
+        token,
+        openId,
+        openIdCipher,
+        csecuuid,
+        userId: resolvedUserId,
+        uuid: urlParams.uuid || '',
+        ci: cityId,
+        mypos: position
+      }
+    }
+  }
+
   async startCapture(port = 8898) {
     return new Promise((resolve, reject) => {
       this.tokenCaptureStopped = false
@@ -202,9 +307,7 @@ class ProxyService {
         const [hostname, portStr] = req.url.split(':')
         const targetPort = parseInt(portStr) || 443
 
-        const isPeppermall = hostname === 'peppermall.meituan.com'
-
-        if (isPeppermall) {
+        if (this.isTargetDomain(hostname)) {
           if (!certCache[hostname]) {
             certCache[hostname] = this.generateCertForHost(hostname)
           }
@@ -241,45 +344,27 @@ class ProxyService {
               const reqStr = data.toString()
 
               if (/^(GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\s/.test(reqStr)) {
-                const headerLines = reqStr.split('\r\n')
-                let csecuserid = ''
-                let token = ''
-                let csecuuid = ''
-                let openId = ''
-                let openIdCipher = ''
+                const headerEnd = reqStr.indexOf('\r\n\r\n')
+                const headerSection = headerEnd >= 0 ? reqStr.substring(0, headerEnd) : reqStr
+                const headerLines = headerSection.split('\r\n')
+                const extracted = this.extractAuthHeaders(headerLines)
 
-                for (const line of headerLines) {
-                  const lowerLine = line.toLowerCase()
-                  if (lowerLine.startsWith('csecuserid:')) {
-                    csecuserid = line.substring(11).trim()
-                  } else if (lowerLine.startsWith('token:')) {
-                    token = line.substring(6).trim()
-                  } else if (lowerLine.startsWith('csecuuid:')) {
-                    csecuuid = line.substring(8).trim()
-                  } else if (lowerLine.startsWith('openid:')) {
-                    openId = line.substring(7).trim()
-                  } else if (lowerLine.startsWith('openidcipher:')) {
-                    openIdCipher = line.substring(13).trim()
-                  }
-                }
-
-                if (csecuserid && token) {
-                  const resultUrl = `https://i.meituan.com/mttouch/page/account?cevent=imt%2Fhomepage%2Fmine&userId=${csecuserid}&token=${token}`
+                if (extracted.token && extracted.token.length > 10) {
+                  const result = this.buildCaptureResult({
+                    token: extracted.token,
+                    openId: extracted.openId,
+                    openIdCipher: extracted.openIdCipher,
+                    csecuuid: extracted.csecuuid,
+                    userId: extracted.userId,
+                    urlParams: this.extractUrlParamsFromRequestLine(headerLines[0] || '')
+                  })
 
                   const resolveFunc = this.tokenCaptureResolve
                   this.tokenCaptureResolve = null
                   this.stopCapture()
 
                   if (resolveFunc) {
-                    resolveFunc({
-                      success: true,
-                      url: resultUrl,
-                      userid: csecuserid,
-                      token,
-                      csecuuid: csecuuid || '',
-                      openId: openId || '',
-                      openIdCipher: openIdCipher || ''
-                    })
+                    resolveFunc(result)
                   }
                   return
                 }
@@ -343,6 +428,25 @@ class ProxyService {
       })
 
       this.tokenCaptureServer.on('request', (req, res) => {
+        if (req.headers.token && !this.tokenCaptureStopped && this.tokenCaptureResolve) {
+          const result = this.buildCaptureResult({
+            token: String(req.headers.token || ''),
+            openId: String(req.headers.openid || ''),
+            openIdCipher: String(req.headers.openidcipher || ''),
+            csecuuid: String(req.headers.csecuuid || ''),
+            userId: String(req.headers.csecuserid || ''),
+            urlParams: this.extractUrlParamsFromRequestLine(`${req.method} ${req.url}`)
+          })
+
+          const resolveFunc = this.tokenCaptureResolve
+          this.tokenCaptureResolve = null
+          this.stopCapture()
+
+          if (resolveFunc) {
+            resolveFunc(result)
+          }
+        }
+
         const targetUrl = req.url
         try {
           const parsedUrl = new URL(targetUrl)
@@ -395,7 +499,6 @@ class ProxyService {
   }
 
   async start() {
-    // Initialize but don't start capturing yet
     this.ensureProxyDisabled()
   }
 

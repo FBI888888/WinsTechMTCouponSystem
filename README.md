@@ -94,7 +94,7 @@ cd frontend
 npm run electron:build
 
 # 打包产物位于 dist-electron/
-# Windows: MT Coupon System Setup 1.0.0.exe
+# Windows: MT Coupon System Setup 1.2.0.exe
 ```
 
 ## 更新流程
