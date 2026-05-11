@@ -25,6 +25,7 @@ from app.deps import get_current_user
 from app.routers.stats import invalidate_dashboard_stats_cache
 from app.utils.order_status import (
     COMPLETED_STATUS_BUCKET,
+    GIFT_USED_STATUS_BUCKET,
     PENDING_STATUS_BUCKET,
     REFUND_STATUS_BUCKET,
     normalize_order_status_bucket,
@@ -156,6 +157,8 @@ def _build_order_filters(
         query = query.filter(Order.order_status_bucket == COMPLETED_STATUS_BUCKET)
     elif status_filter == 4:
         query = query.filter(Order.order_status_bucket == REFUND_STATUS_BUCKET)
+    elif status_filter == 5:
+        query = query.filter(Order.order_status_bucket == GIFT_USED_STATUS_BUCKET)
 
     if start_date:
         query = query.filter(Order.order_pay_time >= datetime.fromisoformat(start_date))
@@ -425,6 +428,8 @@ def get_pending_coupon_query_orders(
             query = query.filter(Order.order_status_bucket == COMPLETED_STATUS_BUCKET)
         elif status_filter == 4:
             query = query.filter(Order.order_status_bucket == REFUND_STATUS_BUCKET)
+        elif status_filter == 5:
+            query = query.filter(Order.order_status_bucket == GIFT_USED_STATUS_BUCKET)
     query = query.filter(Order.order_view_id.isnot(None), Order.order_view_id != '')
 
     orders = query.order_by(Order.order_pay_time.desc(), Order.id.desc()).limit(limit + 1).all()
@@ -632,7 +637,19 @@ def save_coupon(
     - 濡傛灉鍒哥爜涓嶅瓨鍦紝鍒欐柊澧?
     """
     # 鏌ヨ璁㈠崟鏄惁瀛樺湪
-    order = db.query(Order).filter(Order.id == request.order_id).first()
+    order = None
+    if request.order_id:
+        order = db.query(Order).filter(Order.id == request.order_id).first()
+    if not order and request.order_view_id:
+        order = db.query(Order).filter(
+            Order.account_id == request.account_id,
+            Order.order_view_id == request.order_view_id
+        ).first()
+    if not order and request.order_view_id:
+        order = db.query(Order).filter(
+            Order.account_id == request.account_id,
+            Order.order_id == request.order_view_id
+        ).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
@@ -658,7 +675,7 @@ def save_coupon(
 
     # 鏌ヨ鏄惁宸插瓨鍦ㄧ浉鍚屽埜鐮佽褰曪紙鎸?order_id + coupon_code锛?
     existing = db.query(Coupon).filter(
-        Coupon.order_id == request.order_id,
+        Coupon.order_id == order.id,
         Coupon.coupon_code == coupon_code
     ).first()
 
@@ -673,7 +690,7 @@ def save_coupon(
     else:
         # 鍒涘缓鏂板埜鐮?
         new_coupon = Coupon(
-            order_id=request.order_id,
+            order_id=order.id,
             account_id=request.account_id,
             coupon_code=coupon_code,
             encode=encode,

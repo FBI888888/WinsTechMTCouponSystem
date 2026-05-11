@@ -1,5 +1,6 @@
 -- MT 券码系统数据库初始化脚本
 -- 创建日期: 2026-03-29
+-- 更新日期: 2026-04-16 (合并所有迁移脚本)
 
 -- 创建数据库
 CREATE DATABASE IF NOT EXISTS `mt_coupon` DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -35,13 +36,17 @@ CREATE TABLE IF NOT EXISTS `mt_accounts` (
     `open_id` VARCHAR(100) DEFAULT NULL COMMENT 'openId',
     `open_id_cipher` VARCHAR(255) DEFAULT NULL COMMENT 'openIdCipher',
     `status` ENUM('normal', 'invalid', 'unchecked') NOT NULL DEFAULT 'unchecked' COMMENT '账号状态',
+    `disabled` INT NOT NULL DEFAULT 0 COMMENT '是否禁用: 0=启用, 1=禁用',
     `last_check_time` DATETIME DEFAULT NULL COMMENT '最后检测时间',
+    `last_scan_time` DATETIME DEFAULT NULL COMMENT '最后扫描时间',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_userid` (`userid`),
     INDEX `idx_userid` (`userid`),
     INDEX `idx_user` (`user_id`),
+    INDEX `idx_status` (`status`),
+    INDEX `idx_disabled` (`disabled`),
     FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='美团账号表';
 
@@ -58,6 +63,7 @@ CREATE TABLE IF NOT EXISTS `orders` (
     `commission_fee` DECIMAL(10,2) DEFAULT NULL COMMENT '佣金',
     `total_coupon_num` INT DEFAULT NULL COMMENT '子订单数',
     `order_status` INT DEFAULT NULL COMMENT '订单状态(2付款/3完成/4取消/5风控/6结算)',
+    `order_status_bucket` VARCHAR(20) NOT NULL DEFAULT 'other' COMMENT '状态分桶: pending/completed/refund/other',
     `showstatus` VARCHAR(50) DEFAULT NULL COMMENT '原始状态文本',
     `catename` VARCHAR(50) DEFAULT NULL COMMENT '分类名称',
     `is_gift` TINYINT(1) DEFAULT 0 COMMENT '是否为礼物订单',
@@ -65,12 +71,19 @@ CREATE TABLE IF NOT EXISTS `orders` (
     `city_name` VARCHAR(50) DEFAULT NULL COMMENT '下单城市',
     `consume_city_name` VARCHAR(50) DEFAULT NULL COMMENT '消费城市',
     `coupon_query_status` INT DEFAULT 0 COMMENT '券码查询状态: 0=待查询, 1=成功, 2=失败',
+    `gift_return_status` INT NOT NULL DEFAULT 0 COMMENT '礼物退款状态',
+    `gift_return_message` VARCHAR(255) DEFAULT NULL COMMENT '礼物退款消息',
+    `gift_return_updated_at` DATETIME DEFAULT NULL COMMENT '礼物退款更新时间',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
-    UNIQUE KEY `uk_account_order` (`account_id`, `order_id`),
+    UNIQUE KEY `uq_orders_account_order_id` (`account_id`, `order_id`),
     INDEX `idx_order_id` (`order_id`),
     INDEX `idx_pay_time` (`order_pay_time`),
+    INDEX `idx_orders_account_paytime_id` (`account_id`, `order_pay_time`, `id`),
+    INDEX `idx_orders_account_coupon_query_paytime_id` (`account_id`, `coupon_query_status`, `order_pay_time`, `id`),
+    INDEX `idx_orders_account_status_bucket_paytime_id` (`account_id`, `order_status_bucket`, `order_pay_time`, `id`),
+    INDEX `idx_orders_account_order_view_id` (`account_id`, `order_view_id`),
     FOREIGN KEY (`account_id`) REFERENCES `mt_accounts`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
@@ -82,7 +95,9 @@ CREATE TABLE IF NOT EXISTS `coupons` (
     `order_id` INT NOT NULL COMMENT '关联订单ID',
     `account_id` INT NOT NULL COMMENT '所属账号ID',
     `coupon_code` VARCHAR(100) DEFAULT NULL COMMENT '券码',
-    `coupon_status` INT DEFAULT NULL COMMENT '券码状态',
+    `encode` VARCHAR(100) DEFAULT NULL COMMENT '券码稳定标识符(用于变码检测)',
+    `coupon_status` VARCHAR(50) DEFAULT NULL COMMENT '券码状态',
+    `use_status` INT DEFAULT NULL COMMENT '使用状态',
     `gift_id` VARCHAR(50) DEFAULT NULL COMMENT '礼物号',
     `query_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '查询时间',
     `raw_data` JSON DEFAULT NULL COMMENT '原始数据',
@@ -90,12 +105,40 @@ CREATE TABLE IF NOT EXISTS `coupons` (
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
     INDEX `idx_coupon_code` (`coupon_code`),
+    INDEX `idx_encode` (`encode`),
     INDEX `idx_gift_id` (`gift_id`),
     INDEX `idx_order` (`order_id`),
     INDEX `idx_account` (`account_id`),
+    INDEX `idx_coupons_account_query_time` (`account_id`, `query_time`),
+    UNIQUE KEY `uq_coupons_order_coupon_code` (`order_id`, `coupon_code`),
     FOREIGN KEY (`order_id`) REFERENCES `orders`(`id`) ON DELETE CASCADE,
     FOREIGN KEY (`account_id`) REFERENCES `mt_accounts`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='券码表';
+
+-- =====================================================
+-- 券码变更历史表
+-- =====================================================
+CREATE TABLE IF NOT EXISTS `coupon_history` (
+    `id` INT NOT NULL AUTO_INCREMENT,
+    `coupon_id` INT NOT NULL COMMENT '当前券码ID',
+    `order_id` INT NOT NULL COMMENT '关联订单ID',
+    `account_id` INT NOT NULL COMMENT '所属账号ID',
+    `old_coupon_code` VARCHAR(100) NOT NULL COMMENT '旧券码',
+    `new_coupon_code` VARCHAR(100) NOT NULL COMMENT '新券码',
+    `changed_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '变更时间',
+    `change_reason` VARCHAR(50) NOT NULL DEFAULT 'auto_detect' COMMENT '变更原因: auto_detect/manual',
+    PRIMARY KEY (`id`),
+    INDEX `idx_old_coupon_code` (`old_coupon_code`),
+    INDEX `idx_new_coupon_code` (`new_coupon_code`),
+    INDEX `idx_coupon_id` (`coupon_id`),
+    INDEX `idx_order_id` (`order_id`),
+    INDEX `idx_account_id` (`account_id`),
+    INDEX `idx_coupon_history_coupon_changed_id` (`coupon_id`, `changed_at`, `id`),
+    INDEX `idx_coupon_history_old_changed_id` (`old_coupon_code`, `changed_at`, `id`),
+    FOREIGN KEY (`coupon_id`) REFERENCES `coupons`(`id`) ON DELETE CASCADE,
+    FOREIGN KEY (`order_id`) REFERENCES `orders`(`id`) ON DELETE CASCADE,
+    FOREIGN KEY (`account_id`) REFERENCES `mt_accounts`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='券码变更历史表';
 
 -- =====================================================
 -- 系统配置表
@@ -166,6 +209,7 @@ CREATE TABLE IF NOT EXISTS `scheduled_task_logs` (
     `started_at` DATETIME NOT NULL COMMENT '开始时间',
     `finished_at` DATETIME DEFAULT NULL COMMENT '结束时间',
     `duration_seconds` INT DEFAULT NULL COMMENT '耗时(秒)',
+    `scan_details` TEXT DEFAULT NULL COMMENT '扫描详情(JSON格式)',
     PRIMARY KEY (`id`),
     INDEX `idx_task_name` (`task_name`),
     INDEX `idx_status` (`status`),
@@ -208,7 +252,8 @@ INSERT INTO `system_config` (`config_key`, `config_value`, `config_type`, `categ
 ('proxy_port', '8898', 'number', 'proxy', 0, '抓包端口'),
 ('log_level', 'INFO', 'string', 'log', 0, '日志级别'),
 ('log_retention_days', '30', 'number', 'log', 0, '日志保留天数'),
-('api_rate_limit', '100', 'number', 'api', 0, 'API默认每分钟请求限制');
+('api_rate_limit', '100', 'number', 'api', 0, 'API默认每分钟请求限制'),
+('system_version', '1.1.0', 'string', 'system', 1, '系统版本号');
 
 -- =====================================================
 -- 完成

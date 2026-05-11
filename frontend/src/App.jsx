@@ -10,6 +10,7 @@ import AccountPage from './pages/AccountPage'
 import OrderListPage from './pages/OrderListPage'
 import CouponQueryPage from './pages/CouponQueryPage'
 import OrderQueryPage from './pages/OrderQueryPage'
+import GiftReturnPage from './pages/GiftReturnPage'
 import LogPage from './pages/LogPage'
 import SettingsPage from './pages/SettingsPage'
 import UserPage from './pages/UserPage'
@@ -90,6 +91,7 @@ function App() {
           <Route path="orders" element={<OrderListPage />} />
           <Route path="coupons" element={<CouponQueryPage />} />
           <Route path="order-query" element={<OrderQueryPage />} />
+          <Route path="gift-return" element={<GiftReturnPage />} />
           <Route path="logs" element={<LogPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="users" element={<UserPage />} />

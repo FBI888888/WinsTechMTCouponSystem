@@ -10,16 +10,32 @@ import {
   markQueryResultSaved,
   QUERY_RESULT_STATUS
 } from '../utils/queryResult'
+import CouponQueryResultDialog from '../components/CouponQueryResultDialog'
 
 function OrderQueryPage() {
-  const { accounts, accountsLoaded, fetchAccounts } = useDataStore()
+  const {
+    accounts,
+    accountsLoaded,
+    fetchAccounts,
+    orderQueryOrderId,
+    orderQueryResult,
+    setOrderQueryPageData
+  } = useDataStore()
   const toast = useToastStore()
 
   const [selectedAccountId, setSelectedAccountId] = useState('')
-  const [orderId, setOrderId] = useState('')
+  const [orderId, setOrderId] = useState(orderQueryOrderId || '')
   const [loading, setLoading] = useState(false)
   const [backendLoading, setBackendLoading] = useState(false)
-  const [result, setResult] = useState(null)
+  const [result, setResult] = useState(orderQueryResult)
+
+  // 券码查询结果弹窗状态
+  const [couponDialogOpen, setCouponDialogOpen] = useState(false)
+  const [couponDialogResult, setCouponDialogResult] = useState(null)
+  const [couponDialogMeta, setCouponDialogMeta] = useState(null)
+  const [couponDialogLoading, setCouponDialogLoading] = useState(false)
+  const [couponDialogTitle, setCouponDialogTitle] = useState('')
+  const [couponDialogRefreshFn, setCouponDialogRefreshFn] = useState(null)
 
   useEffect(() => {
     if (!accountsLoaded) {
@@ -28,10 +44,14 @@ function OrderQueryPage() {
   }, [accountsLoaded, fetchAccounts])
 
   useEffect(() => {
-    if (accounts.length > 0 && !selectedAccountId) {
-      setSelectedAccountId(String(accounts[0].id))
+    setOrderQueryPageData({ selectedAccountId, orderId, result })
+  }, [selectedAccountId, orderId, result, setOrderQueryPageData])
+
+  useEffect(() => {
+    return () => {
+      setCouponDialogOpen(false)
     }
-  }, [accounts, selectedAccountId])
+  }, [])
 
   const selectedAccount = accounts.find(account => account.id === parseInt(selectedAccountId, 10))
 
@@ -75,12 +95,46 @@ function OrderQueryPage() {
 
       if (meituanResult.success && Array.isArray(meituanResult.data?.response?.data)) {
         const coupons = meituanResult.data.response.data
-        setResult(createSuccessQueryResult({
+        const queryResult = createSuccessQueryResult({
           source: 'frontend',
           coupons,
           message: `查询成功，获取到 ${coupons.length} 个券码`,
           meta: buildQueryMeta()
-        }))
+        })
+        setResult(queryResult)
+
+        // 自动落库：确保订单存在并保存券码
+        if (coupons.length > 0) {
+          (async () => {
+            try {
+              const orderData = {
+                orderId: orderId.trim(),
+                orderViewId: orderId.trim(),
+                orderAmount: 0,
+                orderStatus: 1,
+                title: coupons[0]?.title || ''
+              }
+              const saveResponse = await ordersApi.saveBatch({
+                account_id: parseInt(selectedAccountId, 10),
+                orders: [orderData]
+              })
+              const savedOrderId = saveResponse.data?.order_ids?.[0] || null
+
+              for (const couponInfo of coupons) {
+                await ordersApi.saveCoupon({
+                  account_id: parseInt(selectedAccountId, 10),
+                  order_id: savedOrderId,
+                  order_view_id: orderId.trim(),
+                  coupon_data: couponInfo,
+                  raw_data: { data: coupons }
+                })
+              }
+              setResult(prev => markQueryResultSaved(prev))
+            } catch (e) {
+              console.error('Auto-save coupon error:', e)
+            }
+          })()
+        }
       } else {
         setResult(createErrorQueryResult({
           source: 'frontend',
@@ -226,6 +280,97 @@ function OrderQueryPage() {
     }
   }
 
+  // 按订单查询券码（用于“详情”按钮，复用 OrderListPage 右键菜单逻辑）
+  const queryCouponForOrder = async (coupon, options = {}) => {
+    const { forceRefresh = false } = options
+
+    if (!forceRefresh && result?.status === QUERY_RESULT_STATUS.SUCCESS && result.coupons?.length > 0) {
+      setCouponDialogResult(result)
+      setCouponDialogMeta({ source: 'cache' })
+      setCouponDialogTitle(`订单 ${orderId.trim()}`)
+      setCouponDialogOpen(true)
+      setCouponDialogRefreshFn(() => () => queryCouponForOrder(coupon, { forceRefresh: true }))
+      return
+    }
+
+    if (!selectedAccountId) {
+      toast.warning('请先选择账号')
+      return
+    }
+    if (!orderId.trim()) {
+      toast.warning('请输入订单号')
+      return
+    }
+    if (!selectedAccount?.open_id || !selectedAccount?.open_id_cipher) {
+      toast.warning('当前账号缺少必要信息(openId)，请先在账号管理中重新抓取')
+      return
+    }
+
+    setCouponDialogLoading(true)
+    setCouponDialogResult(null)
+    setCouponDialogMeta(null)
+    setCouponDialogTitle(`订单 ${orderId.trim()}`)
+    setCouponDialogOpen(true)
+    setCouponDialogRefreshFn(() => () => queryCouponForOrder(coupon, { forceRefresh: true }))
+
+    try {
+      const meituanResult = await window.electronAPI.rebateQueryOne({
+        account: {
+          userid: selectedAccount.userid,
+          token: selectedAccount.token,
+          csecuuid: selectedAccount.csecuuid || 'c34d9b03-7520-47e3-9d7c-17a3d930c48d',
+          openId: selectedAccount.open_id,
+          openIdCipher: selectedAccount.open_id_cipher
+        },
+        orderId: orderId.trim()
+      })
+
+      if (meituanResult.success && meituanResult.data?.response) {
+        const coupons = Array.isArray(meituanResult.data.response?.data) ? meituanResult.data.response.data : []
+        const queryResult = createSuccessQueryResult({
+          source: 'frontend',
+          coupons,
+          message: coupons.length > 0 ? `查询成功，获取到 ${coupons.length} 个券码` : '未查询到券码信息'
+        })
+        setCouponDialogResult(queryResult)
+        setCouponDialogMeta({ source: 'live' })
+      } else {
+        const errorMessage = getResultErrorMessage(meituanResult, '未知错误')
+        setCouponDialogResult(createErrorQueryResult({
+          source: 'frontend',
+          message: `查询失败: ${errorMessage}`
+        }))
+        toast.error('查询失败: ' + errorMessage)
+      }
+    } catch (error) {
+      const errorMessage = getErrorMessage(error, '未知错误')
+      setCouponDialogResult(createErrorQueryResult({
+        source: 'frontend',
+        message: `查询失败: ${errorMessage}`
+      }))
+      toast.error('查询失败: ' + errorMessage)
+    } finally {
+      setCouponDialogLoading(false)
+    }
+  }
+
+  const handleCloseCouponDialog = () => {
+    setCouponDialogOpen(false)
+    setCouponDialogResult(null)
+    setCouponDialogMeta(null)
+    setCouponDialogLoading(false)
+    setCouponDialogRefreshFn(null)
+  }
+
+  const formatDateTime = (dateStr) => {
+    if (!dateStr) return '-'
+    try {
+      return new Date(dateStr).toLocaleString('zh-CN')
+    } catch {
+      return dateStr
+    }
+  }
+
   const getCouponStatusTone = (coupon) => {
     const status = coupon.order_status || coupon.coupon_status || ''
     if (status.includes('待')) return 'bg-blue-100 text-blue-800'
@@ -244,6 +389,7 @@ function OrderQueryPage() {
               onChange={(e) => setSelectedAccountId(e.target.value)}
               className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
             >
+              <option value="" disabled>请选择账号</option>
               {accounts.map(account => (
                 <option key={account.id} value={account.id}>
                   {account.remark || account.userid}
@@ -348,14 +494,23 @@ function OrderQueryPage() {
                         {coupon.verifyPoiName || '-'}
                       </td>
                       <td className="px-4 py-3 text-sm">
-                        <button
-                          id={`order-copy-btn-${index}`}
-                          onClick={() => handleCopy(coupon, index)}
-                          className="px-2 py-1 text-xs bg-blue-50 text-blue-600 rounded hover:bg-blue-100 flex items-center gap-1"
-                        >
-                          <Copy className="w-3 h-3" />
-                          复制
-                        </button>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => queryCouponForOrder(coupon)}
+                            className="px-2 py-1 text-xs bg-purple-50 text-purple-600 rounded hover:bg-purple-100"
+                            title="查看详情"
+                          >
+                            详情
+                          </button>
+                          <button
+                            id={`order-copy-btn-${index}`}
+                            onClick={() => handleCopy(coupon, index)}
+                            className="px-2 py-1 text-xs bg-blue-50 text-blue-600 rounded hover:bg-blue-100 flex items-center gap-1"
+                          >
+                            <Copy className="w-3 h-3" />
+                            复制
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -375,6 +530,17 @@ function OrderQueryPage() {
           请输入订单号并选择查询方式
         </div>
       )}
+
+      {/* 券码查询结果弹窗 */}
+      <CouponQueryResultDialog
+        open={couponDialogOpen}
+        onClose={handleCloseCouponDialog}
+        titleSuffix={couponDialogTitle}
+        queryResult={couponDialogResult}
+        queryMeta={couponDialogMeta}
+        loading={couponDialogLoading}
+        onRefresh={couponDialogRefreshFn || undefined}
+      />
     </div>
   )
 }

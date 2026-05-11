@@ -158,6 +158,20 @@ async def lifespan(app: FastAPI):
     # Start scheduler
     setup_scheduler()
 
+    # 一次性数据迁移：修正已有"礼物已使用"订单的 order_status_bucket
+    try:
+        db = SessionLocal()
+        result = db.execute(
+            text("UPDATE orders SET order_status_bucket = 'gift_used' WHERE showstatus LIKE '%礼物已使用%' AND order_status_bucket != 'gift_used'")
+        )
+        if result.rowcount > 0:
+            db.commit()
+            logger.info(f"[Migration] Updated {result.rowcount} orders to gift_used status bucket")
+        else:
+            db.close()
+    except Exception as e:
+        logger.warning(f"[Migration] gift_used bucket migration failed: {e}")
+
     yield
 
     # Shutdown
@@ -264,7 +278,7 @@ app.include_router(stats.router)
 
 @app.get("/")
 def root():
-    return {"message": "MT Coupon System API", "version": "1.2.0"}
+    return {"message": "MT Coupon System API", "version": "1.3.0"}
 
 
 @app.get("/health")

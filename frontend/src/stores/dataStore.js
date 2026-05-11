@@ -89,6 +89,16 @@ export const useDataStore = create((set, get) => ({
   setOrderSyncProgress: (progress) => set({ orderSyncProgress: progress }),
   incrementSyncRunId: () => set((state) => ({ orderSyncRunId: state.orderSyncRunId + 1 })),
 
+  // 订单查询页缓存（页面切换不丢失）
+  orderQuerySelectedAccountId: '',
+  orderQueryOrderId: '',
+  orderQueryResult: null,
+  setOrderQueryPageData: ({ selectedAccountId, orderId, result }) => set({
+    orderQuerySelectedAccountId: selectedAccountId,
+    orderQueryOrderId: orderId,
+    orderQueryResult: result
+  }),
+
   // 券码查询状态（持久化，页面切换不丢失）
   orderQuerying: false,
   orderQueryProgress: { current: 0, total: 0, message: '' },
@@ -146,6 +156,9 @@ export const useDataStore = create((set, get) => ({
       orderSyncing: false,
       orderSyncProgress: { current: 0, total: 0, message: '' },
       orderSyncRunId: 0,
+      orderQuerySelectedAccountId: '',
+      orderQueryOrderId: '',
+      orderQueryResult: null,
       orderQuerying: false,
       orderQueryProgress: { current: 0, total: 0, message: '' },
       orderQueryRunId: 0,

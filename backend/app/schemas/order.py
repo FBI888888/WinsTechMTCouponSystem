@@ -64,7 +64,7 @@ class OrderSaveRequest(BaseModel):
 
 class CouponSaveRequest(BaseModel):
     account_id: int
-    order_id: int
+    order_id: Optional[int] = None
     order_view_id: Optional[str] = None
     coupon_data: Optional[Dict[str, Any]] = None
     raw_data: Optional[Dict[str, Any]] = None

@@ -1,11 +1,9 @@
 /**
- * 美团API服务模块
- * 使用 H5guard.js 进行签名
+ * Meituan API service
+ * Uses the frontend-local mtgsig standalone signer.
  */
 const axios = require('axios')
-const path = require('path')
-const fs = require('fs')
-const vm = require('vm')
+const { sign: signRequest, reinit: reinitSigner } = require('./mtgsig_standalone.cjs')
 
 // 取消标志存储
 const cancelFlags = new Map()
@@ -30,302 +28,26 @@ function generateOperationId() {
   return Date.now().toString(36) + Math.random().toString(36).substr(2)
 }
 
-// 使用 VM 沙箱加载 H5guard.js，避免污染 global
-let h5guardContext = null
-let getVerifyFunc = null
-let initAttempted = false
-let requestCount = 0  // 请求计数器
-const ROTATION_THRESHOLD = 50  // 每50次请求自动轮换指纹
+// Track signer reuse for Electron-side requests.
+let requestCount = 0
+const ROTATION_THRESHOLD = 50
 
-function initH5guard() {
-  if (getVerifyFunc) return true
-  if (initAttempted) return false
-  initAttempted = true
-
+function getSignedUrl(url, data, method = 'POST') {
   try {
-    const jsPath = path.join(__dirname, 'H5guard.js')
-
-    // 检查文件是否存在
-    if (!fs.existsSync(jsPath)) {
-      console.error('H5guard.js 文件不存在:', jsPath)
-      return false
-    }
-
-    const jsCode = fs.readFileSync(jsPath, 'utf8')
-    console.log('H5guard.js 文件大小:', jsCode.length, '字节')
-
-    // 创建完整的浏览器模拟环境
-    const locationObj = {
-      ancestorOrigins: {},
-      href: "https://awp.meituan.com/h5/order/detail/index.html",
-      origin: "https://awp.meituan.com",
-      protocol: "https:",
-      host: "awp.meituan.com",
-      hostname: "awp.meituan.com",
-      port: "",
-      pathname: "/h5/order/detail/index.html",
-      search: "",
-      hash: ""
-    }
-
-    const documentObj = {
-      cookie: '_lxsdk_cuid=test; _lxsdk=test',
-      body: {},
-      documentElement: {},
-      getElementsByTagName: function (name) {
-        if (name === 'script') return []
-        if (name === 'body') return [{}]
-        return []
-      },
-      createElement: function (name) {
-        if (name === 'div') return { appendChild: () => { } }
-        if (name === 'span') return { style: {}, innerHTML: '', offsetHeight: 0, offsetWidth: 0 }
-        return {}
-      },
-      head: { appendChild: () => { } }
-    }
-
-    const navigatorObj = {
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      platform: 'Win32',
-      language: 'zh-CN',
-      languages: ['zh-CN', 'zh'],
-      cookieEnabled: true,
-      onLine: true
-    }
-
-    const screenObj = {
-      availHeight: 900,
-      availLeft: 0,
-      availTop: 0,
-      availWidth: 1440,
-      colorDepth: 24,
-      height: 900,
-      width: 1440,
-      pixelDepth: 24,
-      orientation: { angle: 0, type: 'landscape-primary' }
-    }
-
-    // 创建沙箱环境
-    const sandbox = {
-      // 全局对象引用（稍后设置）
-      window: null,
-      self: null,
-      top: null,
-      global: null,
-      globalThis: null,
-
-      // 浏览器环境
-      location: locationObj,
-      document: documentObj,
-      navigator: navigatorObj,
-      screen: screenObj,
-      history: { length: 1, state: null },
-      localStorage: { getItem: () => null, setItem: () => { }, removeItem: () => { } },
-      sessionStorage: { getItem: () => null, setItem: () => { }, removeItem: () => { } },
-
-      // 定时器
-      setTimeout: setTimeout,
-      setInterval: function () { return 0 },
-      clearTimeout: clearTimeout,
-      clearInterval: function () { },
-      requestAnimationFrame: function (cb) { return setTimeout(cb, 16) },
-      cancelAnimationFrame: function (id) { clearTimeout(id) },
-
-      // 控制台
-      console: console,
-
-      // 基础类型
-      Date: Date,
-      Math: Math,
-      JSON: JSON,
-      Object: Object,
-      Array: Array,
-      String: String,
-      Number: Number,
-      Boolean: Boolean,
-      RegExp: RegExp,
-      Error: Error,
-      TypeError: TypeError,
-      ReferenceError: ReferenceError,
-      SyntaxError: SyntaxError,
-      RangeError: RangeError,
-      URIError: URIError,
-      EvalError: EvalError,
-      Function: Function,
-      Symbol: Symbol,
-      Map: Map,
-      Set: Set,
-      WeakMap: WeakMap,
-      WeakSet: WeakSet,
-      Promise: Promise,
-      Proxy: Proxy,
-      Reflect: Reflect,
-
-      // 编码函数
-      encodeURIComponent: encodeURIComponent,
-      decodeURIComponent: decodeURIComponent,
-      encodeURI: encodeURI,
-      decodeURI: decodeURI,
-      escape: escape,
-      unescape: unescape,
-      btoa: (str) => Buffer.from(str, 'binary').toString('base64'),
-      atob: (str) => Buffer.from(str, 'base64').toString('binary'),
-
-      // 数值函数
-      parseInt: parseInt,
-      parseFloat: parseFloat,
-      isNaN: isNaN,
-      isFinite: isFinite,
-      Infinity: Infinity,
-      NaN: NaN,
-      undefined: undefined,
-
-      // 类型化数组
-      Uint8Array: Uint8Array,
-      Uint16Array: Uint16Array,
-      Uint32Array: Uint32Array,
-      Int8Array: Int8Array,
-      Int16Array: Int16Array,
-      Int32Array: Int32Array,
-      Float32Array: Float32Array,
-      Float64Array: Float64Array,
-      BigInt64Array: BigInt64Array,
-      BigUint64Array: BigUint64Array,
-      ArrayBuffer: ArrayBuffer,
-      SharedArrayBuffer: SharedArrayBuffer,
-      DataView: DataView,
-
-      // 文本编码
-      TextEncoder: TextEncoder,
-      TextDecoder: TextDecoder,
-
-      // Node.js Buffer
-      Buffer: Buffer,
-
-      // XMLHttpRequest 模拟
-      XMLHttpRequest: function () {
-        this.open = () => { }
-        this.send = () => { }
-        this.setRequestHeader = () => { }
-      },
-
-      // Fetch 相关
-      fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }),
-      Request: function () { },
-      Response: function () { },
-      Headers: function () { },
-
-      // Web API
-      URL: URL,
-      URLSearchParams: URLSearchParams,
-      FormData: function () { },
-      Blob: function () { },
-      File: function () { },
-      FileReader: function () { },
-
-      // 事件
-      Event: function (type) { this.type = type },
-      CustomEvent: function (type, options) { this.type = type; this.detail = options?.detail },
-      addEventListener: () => { },
-      removeEventListener: () => { },
-      dispatchEvent: () => true,
-
-      // 其他
-      performance: { now: () => Date.now(), timing: {} },
-      crypto: { getRandomValues: (arr) => { for (let i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 256); return arr } },
-
-      // 模块导出
-      module: { exports: {} },
-      exports: {},
-      require: () => ({}),
-      define: undefined
-    }
-
-    // 设置全局对象引用为自身（所有全局对象都指向同一个sandbox）
-    sandbox.window = sandbox
-    sandbox.self = sandbox
-    sandbox.top = sandbox
-    sandbox.global = sandbox
-    sandbox.globalThis = sandbox
-
-    // 同时确保 global 对象也有 location 等属性的引用
-    // 因为 H5guard.js 会执行 window = self = top = global 然后访问 window.location
-    Object.defineProperty(sandbox, 'location', {
-      value: locationObj,
-      writable: true,
-      configurable: true,
-      enumerable: true
+    const { signedUrl } = signRequest({
+      method,
+      url,
+      body: data,
+      fresh: false,
+      maxReuse: ROTATION_THRESHOLD,
     })
-
-    // 创建上下文并运行代码
-    vm.createContext(sandbox)
-
-    // 修改 H5guard.js 代码，移除开头的 global 操作
-    // 原代码: window = self = top = global; delete global;
-    // 这会破坏沙箱环境，需要移除
-    let modifiedCode = jsCode
-      // 移除 "window = self = top = global;" 这行
-      .replace(/^window\s*=\s*self\s*=\s*top\s*=\s*global\s*;?\s*/m, '// [PATCHED] window = self = top = global;\n')
-      // 移除 "delete global;" 这行
-      .replace(/^delete\s+global\s*;?\s*/m, '// [PATCHED] delete global;\n')
-
-    vm.runInContext(modifiedCode, sandbox, { filename: 'H5guard.js', timeout: 10000 })
-
-    // 检查 window.GY 是否存在（H5guard 核心签名函数）
-    console.log('H5guard 加载后检查:')
-    console.log('  - window.GY 存在:', typeof sandbox.GY === 'function')
-    console.log('  - module.exports.getVerify 存在:', typeof sandbox.module.exports.getVerify === 'function')
-    console.log('  - sandbox.getVerify 存在:', typeof sandbox.getVerify === 'function')
-
-    // 获取 getVerify 函数
-    getVerifyFunc = sandbox.module.exports.getVerify || sandbox.getVerify || sandbox.window?.getVerify
-
-    if (getVerifyFunc && typeof sandbox.GY === 'function') {
-      h5guardContext = sandbox
-      console.log('H5guard.js 加载成功，GY函数可用')
-      return true
-    } else if (getVerifyFunc) {
-      // getVerify存在但GY不存在，尝试直接绑定
-      h5guardContext = sandbox
-      console.log('H5guard.js 加载成功，但GY函数可能不可用')
-      return true
-    } else {
-      console.error('H5guard.js 中未找到 getVerify 函数')
-      console.error('sandbox keys:', Object.keys(sandbox).filter(k => k !== 'window' && k !== 'global').slice(0, 20))
-      return false
-    }
+    requestCount += 1
+    return signedUrl || url
   } catch (e) {
-    console.error('加载 H5guard.js 失败:', e.message)
-    console.error('错误堆栈:', e.stack?.split('\n').slice(0, 5).join('\n'))
-    return false
-  }
-}
-
-/**
- * 获取签名后的URL
- * @param {string} url - 原始URL
- * @param {string|object} data - 请求数据
- * @returns {string} 签名后的URL
- */
-function getSignedUrl(url, data) {
-  if (!initH5guard() || !getVerifyFunc) {
-    console.warn('H5guard 未加载，使用原始URL')
-    return url
-  }
-
-  try {
-    const dataStr = typeof data === 'string' ? data : JSON.stringify(data)
-    const result = getVerifyFunc(url, dataStr)
-    console.log('H5guard 签名结果:', result ? '成功' : '失败')
-    if (result?.url) {
-      console.log('签名后URL长度:', result.url.length)
-      return result.url
-    }
-    console.warn('签名结果无效，使用原始URL')
-    return url
-  } catch (e) {
-    console.error('签名失败:', e.message, e.stack)
+    console.error('Sign failed:', e.message)
+    try {
+      reinitSigner()
+    } catch (_) {}
     return url
   }
 }
@@ -642,7 +364,7 @@ class MeituanAPI {
     for (let retry = 0; retry < maxRetries; retry++) {
       try {
         const payloadStr = JSON.stringify(payload)
-        const signedUrl = getSignedUrl(baseUrl, payloadStr)
+        const signedUrl = getSignedUrl(baseUrl, payloadStr, 'POST')
 
         console.log(`获取券码 - 订单ID: ${orderIdStr}, 尝试次数: ${retry + 1}/${maxRetries}`)
         console.log('获取券码 - 签名URL:', signedUrl.substring(0, 200) + '...')
@@ -869,7 +591,7 @@ class MeituanAPI {
     for (let retry = 0; retry < maxRetries; retry++) {
       try {
         const payloadStr = JSON.stringify(payload)
-        const signedUrl = getSignedUrl(baseUrl, payloadStr)
+        const signedUrl = getSignedUrl(baseUrl, payloadStr, 'POST')
 
         console.log(`获取礼物券码 - giftId: ${giftId}, 尝试次数: ${retry + 1}/${maxRetries}`)
 
@@ -1274,7 +996,7 @@ class MeituanAPI {
       const url = `https://apimobile.meituan.com/group/v2/deal/${sku}/branches?token=${currentToken}&preCityId=1&offset=${currentOffset}&limit=${limit}&platform=mtapp&os=android&dpId=&chooseCity=0&chooseAllCity=0&bundle_version=1.23.0&source=order&yodaReady=h5&csecplatform=4&csecversion=4.0.3`
 
       const params = this.extractUrlParams(url)
-      const signedUrl = getSignedUrl(url, params)
+      const signedUrl = getSignedUrl(url, params, 'GET')
 
       try {
         const response = await axios.get(signedUrl, {
@@ -1300,7 +1022,7 @@ class MeituanAPI {
 
             const retryUrl = `https://apimobile.meituan.com/group/v2/deal/${sku}/branches?token=${tokenPrefix}&preCityId=1&offset=${currentOffset}&limit=${limit}&platform=mtapp&os=android&dpId=&chooseCity=0&chooseAllCity=0&bundle_version=1.23.0&source=order&yodaReady=h5&csecplatform=4&csecversion=4.0.3`
             const retryParams = this.extractUrlParams(retryUrl)
-            const retrySignedUrl = getSignedUrl(retryUrl, retryParams)
+            const retrySignedUrl = getSignedUrl(retryUrl, retryParams, 'GET')
 
             try {
               const retryResponse = await axios.get(retrySignedUrl, {
@@ -1542,7 +1264,7 @@ class MeituanAPI {
 
     try {
       const payloadStr = JSON.stringify(payload)
-      const signedUrl = getSignedUrl(baseUrl, payloadStr)
+      const signedUrl = getSignedUrl(baseUrl, payloadStr, 'POST')
 
       console.log(`退还礼物请求 - giftId: ${giftId}`)
       const response = await axios.post(signedUrl, payload, { headers, timeout: 15000 })
@@ -1556,30 +1278,25 @@ class MeituanAPI {
 }
 
 /**
- * 重置H5guard以生成新的设备指纹
- * 用于遇到风控时手动轮换
+ * Reset the local mtgsig session.
  */
 function resetH5guard() {
-  console.log('[MeituanAPI] 重置H5guard，将生成新设备指纹...')
-  h5guardContext = null
-  getVerifyFunc = null
-  initAttempted = false
+  console.log('[MeituanAPI] Resetting local mtgsig session...')
   requestCount = 0
-
-  // 重新初始化
-  const success = initH5guard()
-  console.log('[MeituanAPI] H5guard重新初始化:', success ? '成功' : '失败')
-  return success
+  try {
+    reinitSigner()
+    return true
+  } catch (error) {
+    console.error('[MeituanAPI] Failed to reset local mtgsig session:', error.message)
+    return false
+  }
 }
 
-/**
- * 获取当前指纹信息
- */
 function getFingerprintInfo() {
   return {
     requestCount,
     rotationThreshold: ROTATION_THRESHOLD,
-    isInitialized: !!getVerifyFunc,
+    isInitialized: true,
     needsRotation: requestCount >= ROTATION_THRESHOLD
   }
 }

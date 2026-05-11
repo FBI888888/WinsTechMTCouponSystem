@@ -6,10 +6,8 @@
 const axios = require('axios')
 const http = require('http')
 const https = require('https')
-const path = require('path')
-const fs = require('fs')
-const vm = require('vm')
 const readline = require('readline')
+const { sign: signRequest, reinit: reinitSigner } = require('./mtgsig_standalone')
 
 const BACKEND_API_DEBUG = process.env.MEITUAN_BACKEND_DEBUG === '1'
 
@@ -25,162 +23,26 @@ const axiosClient = axios.create({
   httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 10 })
 })
 
-// 加载 H5guard.js
-let h5guardContext = null
-let getVerifyFunc = null
-
-function initH5guard() {
-  if (getVerifyFunc) return true
-
+// Backend-local mtgsig standalone signer
+function getSignedUrl(url, data, method = 'POST') {
   try {
-    const jsPath = path.join(__dirname, 'H5guard.js')
-    if (!fs.existsSync(jsPath)) {
-      console.error('[H5guard] H5guard.js not found:', jsPath)
-      return false
-    }
-
-    const jsCode = fs.readFileSync(jsPath, 'utf8')
-
-    const locationObj = {
-      href: "https://awp.meituan.com/h5/order/detail/index.html",
-      origin: "https://awp.meituan.com",
-      protocol: "https:",
-      host: "awp.meituan.com",
-      hostname: "awp.meituan.com",
-      port: "",
-      pathname: "/h5/order/detail/index.html",
-      search: "",
-      hash: ""
-    }
-
-    const documentObj = {
-      cookie: '_lxsdk_cuid=test; _lxsdk=test',
-      body: {},
-      documentElement: {},
-      getElementsByTagName: () => [],
-      createElement: () => ({ appendChild: () => { } }),
-      head: { appendChild: () => { } }
-    }
-
-    const navigatorObj = {
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      platform: 'Win32',
-      language: 'zh-CN'
-    }
-
-    const sandbox = {
-      window: null,
-      self: null,
-      top: null,
-      global: null,
-      globalThis: null,
-      location: locationObj,
-      document: documentObj,
-      navigator: navigatorObj,
-      screen: { width: 1440, height: 900 },
-      localStorage: { getItem: () => null, setItem: () => { } },
-      sessionStorage: { getItem: () => null, setItem: () => { } },
-      setTimeout: setTimeout,
-      setInterval: () => 0,
-      clearTimeout: clearTimeout,
-      clearInterval: () => { },
-      console: console,
-      Date: Date,
-      Math: Math,
-      JSON: JSON,
-      Object: Object,
-      Array: Array,
-      String: String,
-      Number: Number,
-      Boolean: Boolean,
-      RegExp: RegExp,
-      Error: Error,
-      Promise: Promise,
-      Buffer: Buffer,
-      Uint8Array: Uint8Array,
-      Uint16Array: Uint16Array,
-      Uint32Array: Uint32Array,
-      Int8Array: Int8Array,
-      Int16Array: Int16Array,
-      Int32Array: Int32Array,
-      Float32Array: Float32Array,
-      Float64Array: Float64Array,
-      ArrayBuffer: ArrayBuffer,
-      DataView: DataView,
-      TextEncoder: TextEncoder,
-      TextDecoder: TextDecoder,
-      URL: URL,
-      URLSearchParams: URLSearchParams,
-      btoa: (str) => Buffer.from(str, 'binary').toString('base64'),
-      atob: (str) => Buffer.from(str, 'base64').toString('binary'),
-      parseInt: parseInt,
-      parseFloat: parseFloat,
-      isNaN: isNaN,
-      isFinite: isFinite,
-      encodeURIComponent: encodeURIComponent,
-      decodeURIComponent: decodeURIComponent,
-      encodeURI: encodeURI,
-      decodeURI: decodeURI,
-      escape: escape,
-      unescape: unescape,
-      performance: { now: () => Date.now() },
-      crypto: {
-        getRandomValues: (arr) => {
-          for (let i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 256)
-          return arr
-        }
-      },
-      module: { exports: {} },
-      exports: {},
-      require: () => ({})
-    }
-
-    sandbox.window = sandbox
-    sandbox.self = sandbox
-    sandbox.top = sandbox
-    sandbox.global = sandbox
-    sandbox.globalThis = sandbox
-
-    vm.createContext(sandbox)
-
-    let modifiedCode = jsCode
-      .replace(/^window\s*=\s*self\s*=\s*top\s*=\s*global\s*;?\s*/m, '')
-      .replace(/^delete\s+global\s*;?\s*/m, '')
-
-    vm.runInContext(modifiedCode, sandbox, { filename: 'H5guard.js', timeout: 10000 })
-
-    getVerifyFunc = sandbox.module.exports.getVerify || sandbox.getVerify
-
-    if (getVerifyFunc) {
-      h5guardContext = sandbox
-      return true
-    }
-
-    return false
-  } catch (e) {
-    console.error('Init H5guard failed:', e.message)
-    return false
-  }
-}
-
-function getSignedUrl(url, data) {
-  if (!initH5guard() || !getVerifyFunc) {
-    return url
-  }
-
-  try {
-    const dataStr = typeof data === 'string' ? data : JSON.stringify(data)
-    const result = getVerifyFunc(url, dataStr)
-    return result?.url || url
+    const { signedUrl } = signRequest({
+      method,
+      url,
+      body: data,
+      fresh: false,
+      maxReuse: 100,
+    })
+    return signedUrl || url
   } catch (e) {
     console.error('Sign failed:', e.message)
+    try {
+      reinitSigner()
+    } catch (_) {}
     return url
   }
 }
 
-/**
- * 检查是否全部为占位券码 (000000000000)
- */
 function isAllPlaceholderCoupons(couponsInfoList) {
   if (!Array.isArray(couponsInfoList) || couponsInfoList.length === 0) {
     return false
@@ -370,7 +232,7 @@ async function getCouponList(token, orderId, options = {}) {
 
   try {
     const payloadStr = JSON.stringify(payload)
-    const signedUrl = getSignedUrl(baseUrl, payloadStr)
+    const signedUrl = getSignedUrl(baseUrl, payloadStr, 'POST')
 
     debugLog(`[Backend API] Querying order: ${orderIdStr}, isGift: ${isGift}`)
 
@@ -408,7 +270,7 @@ async function getCouponList(token, orderId, options = {}) {
         retryPayload.commonParams.location.lng = parseFloat(extractedShopLocation.lng)
 
         const retryPayloadStr = JSON.stringify(retryPayload)
-        const retrySignedUrl = getSignedUrl(baseUrl, retryPayloadStr)
+        const retrySignedUrl = getSignedUrl(baseUrl, retryPayloadStr, 'POST')
 
         debugLog(`[Backend API] 重新查询订单: ${orderIdStr}`)
 

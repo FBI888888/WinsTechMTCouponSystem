@@ -1,60 +1,44 @@
-/**
- * 后端调用的券码查询脚本
- * 用法: node get_coupon_info.js <orderViewId> <token> <userid> <csecuuid> <openId> <openIdCipher>
- */
+'use strict';
 
-const fs = require('fs');
-const vm = require('vm');
+const { spawnSync } = require('child_process');
+const path = require('path');
 
-// 加载 mtgsig.js
-const mtgsigPath = require('path').join(__dirname, 'mtgsig.js');
-const code = fs.readFileSync(mtgsigPath, 'utf-8');
+const backendApiPath = path.join(__dirname, 'meituanBackendApi.cjs');
 
-const sandbox = {
-    console,
-    fetch: global.fetch,
-    Headers: global.Headers,
-    Request: global.Request,
-    Response: global.Response,
-    URL,
-    URLSearchParams,
-    Buffer,
-    module: { exports: {} },
-    exports: {},
-    require: () => ({}),
-    setTimeout,
-    clearTimeout
-};
+function main() {
+  const [orderViewId, token, userid, csecuuid = '', openId = ''] = process.argv.slice(2);
 
-vm.createContext(sandbox);
-vm.runInContext(code, sandbox, { filename: 'mtgsig.js', timeout: 15000 });
-
-// 获取命令行参数
-const args = process.argv.slice(2);
-if (args.length < 3) {
-    console.error('参数不足');
+  if (!orderViewId || !token || !userid) {
+    console.error(JSON.stringify({ error: true, message: 'Usage: node get_coupon_info.js <orderViewId> <token> <userid> [csecuuid] [openId]' }));
     process.exit(1);
-}
+  }
 
-const orderViewId = args[0];
-const token = args[1];
-const userid = args[2];
-const csecuuid = args[3] || '';
-const openId = args[4] || '';
-const openIdCipher = args[5] || '';
+  const argsJson = JSON.stringify({
+    token,
+    orderId: String(orderViewId),
+    options: {
+      userId: String(userid),
+      openId: String(openId),
+      uuid: String(csecuuid || 'c34d9b03-7520-47e3-9d7c-17a3d930c48d'),
+    },
+  });
 
-// 调用函数
-async function main() {
-    try {
-        const result = await sandbox.get_mt_order_rebate_info(orderViewId, token, userid, {
-            csecuuid,
-            openId,
-            openIdCipher
-        });
-        console.log(JSON.stringify(result));
-    } catch (error) {
-        console.error(JSON.stringify({ error: true, message: error.message }));
-    }
+  const result = spawnSync(process.execPath, [backendApiPath, 'getCouponList', argsJson], {
+    encoding: 'utf8',
+    timeout: 30000,
+  });
+
+  if (result.error) {
+    console.error(JSON.stringify({ error: true, message: result.error.message }));
+    process.exit(1);
+  }
+
+  if (result.status !== 0) {
+    console.error(result.stderr || JSON.stringify({ error: true, message: 'backend api process failed' }));
+    process.exit(result.status || 1);
+  }
+
+  process.stdout.write(result.stdout);
 }
 
 main();

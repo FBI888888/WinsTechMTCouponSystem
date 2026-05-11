@@ -33,6 +33,12 @@ const menuItems = [
     adminOnly: false
   },
   {
+    path: '/gift-return',
+    label: '礼物退还',
+    icon: 'M20 7h-2.18c.11-.31.18-.65.18-1 0-1.66-1.34-3-3-3-1.05 0-1.96.54-2.5 1.35L12 5.02l-.5-.67C10.96 3.54 10.05 3 9 3 7.34 3 6 4.34 6 6c0 .35.07.69.18 1H4c-1.11 0-1.99.89-1.99 2L2 20c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V9c0-1.11-.89-2-2-2zm-5-2c.55 0 1 .45 1 1s-.45 1-1 1h-2.03l.78-1.04C14.04 5.57 14.49 5 15 5zM9 5c.51 0 .96.57 1.25.96L11.03 7H9c-.55 0-1-.45-1-1s.45-1 1-1zm11 15H4v-2h16v2zm0-5H4V9h5.08L7 11.83 8.62 13 12 8.4l3.38 4.6L17 11.83 14.92 9H20v6z',
+    adminOnly: false
+  },
+  {
     path: '/logs',
     label: '运行日志',
     icon: 'M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 14H6v-2h6v2zm4-4H6v-2h10v2zm0-4H6V7h10v2z',
@@ -96,7 +102,7 @@ function Sidebar() {
       </nav>
 
       <div className="p-4 border-t border-gray-100">
-        <p className="text-xs text-gray-400 text-center">v1.2.0</p>
+        <p className="text-xs text-gray-400 text-center">v1.3.0</p>
       </div>
     </aside>
   )

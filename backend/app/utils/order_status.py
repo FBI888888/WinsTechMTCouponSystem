@@ -1,6 +1,7 @@
 PENDING_STATUS_BUCKET = "pending"
 COMPLETED_STATUS_BUCKET = "completed"
 REFUND_STATUS_BUCKET = "refund"
+GIFT_USED_STATUS_BUCKET = "gift_used"
 OTHER_STATUS_BUCKET = "other"
 
 
@@ -9,6 +10,9 @@ def normalize_order_status_bucket(order_status=None, showstatus: str | None = No
 
     if "退款" in normalized_showstatus:
         return REFUND_STATUS_BUCKET
+
+    if "礼物已使用" in normalized_showstatus:
+        return GIFT_USED_STATUS_BUCKET
 
     if "已完成" in normalized_showstatus or "待评价" in normalized_showstatus:
         return COMPLETED_STATUS_BUCKET

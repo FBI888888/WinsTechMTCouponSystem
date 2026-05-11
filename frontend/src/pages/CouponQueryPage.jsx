@@ -1,13 +1,17 @@
 import { useState, useEffect, useRef } from 'react'
-import { couponsApi } from '../api'
-import { Play, Download, Trash2, RefreshCw, Database, ArrowRight, Info, X, Clock, User, FileText, AlertCircle } from 'lucide-react'
+import { couponsApi, accountsApi } from '../api'
+import { Play, Download, Trash2, RefreshCw, Database, ArrowRight } from 'lucide-react'
 import { useDataStore } from '../stores/dataStore'
 import { useToastStore } from '../stores/toastStore'
 import { getErrorMessage, isAbortError } from '../utils/requestFeedback'
 import { createErrorQueryResult, createSuccessQueryResult, QUERY_RESULT_STATUS } from '../utils/queryResult'
+import CouponQueryResultDialog from '../components/CouponQueryResultDialog'
 
 function CouponQueryPage() {
   const {
+    accounts,
+    accountsLoaded,
+    fetchAccounts,
     couponQueryResults: storedResults,
     couponQueryCodes: storedCodes,
     setCouponQueryData,
@@ -23,13 +27,21 @@ function CouponQueryPage() {
   const [progress, setProgress] = useState({ current: 0, total: 0 })
   const couponResultsRequestIdRef = useRef(0)
   const couponResultsAbortControllerRef = useRef(null)
-  const detailRequestIdRef = useRef(0)
-  const detailAbortControllerRef = useRef(null)
+  const couponDialogRequestIdRef = useRef(0)
 
   // 详情弹窗状态
-  const [showDetail, setShowDetail] = useState(false)
-  const [detailData, setDetailData] = useState(null)
-  const [detailLoading, setDetailLoading] = useState(false)
+  const [couponDialogOpen, setCouponDialogOpen] = useState(false)
+  const [couponDialogResult, setCouponDialogResult] = useState(null)
+  const [couponDialogMeta, setCouponDialogMeta] = useState(null)
+  const [couponDialogLoading, setCouponDialogLoading] = useState(false)
+  const [couponDialogTitle, setCouponDialogTitle] = useState('')
+  const [couponDialogRefreshFn, setCouponDialogRefreshFn] = useState(null)
+
+  useEffect(() => {
+    if (!accountsLoaded) {
+      fetchAccounts(accountsApi)
+    }
+  }, [accountsLoaded, fetchAccounts])
 
   useEffect(() => {
     setCouponQueryData(results, couponCodes)
@@ -38,46 +50,114 @@ function CouponQueryPage() {
   useEffect(() => {
     return () => {
       couponResultsAbortControllerRef.current?.abort()
-      detailAbortControllerRef.current?.abort()
       couponResultsRequestIdRef.current += 1
-      detailRequestIdRef.current += 1
+      couponDialogRequestIdRef.current += 1
     }
   }, [])
 
-  // 获取券码详情
-  const handleShowDetail = async (couponCode) => {
-    const requestId = ++detailRequestIdRef.current
-    detailAbortControllerRef.current?.abort()
-    const abortController = new AbortController()
-    detailAbortControllerRef.current = abortController
-    setDetailLoading(true)
-    setShowDetail(true)
-    setDetailData(null)
+  const getCouponDialogOrderInfo = (result) => {
+    const orderId = result.order_view_id && result.order_view_id !== '-' ? String(result.order_view_id).trim() : ''
+    const giftId = result.gift_id && result.gift_id !== '-' ? String(result.gift_id).trim() : ''
+    const queryOrderId = giftId || orderId
+    const isGiftId = Boolean(giftId) || queryOrderId.length > 20 || /^[a-zA-Z]/.test(queryOrderId)
+
+    return {
+      queryOrderId,
+      isGiftId,
+      title: orderId ? `订单 ${orderId}` : giftId ? `礼物 ${giftId}` : `券码 ${result.current_coupon_code || result.coupon_code || '-'}`
+    }
+  }
+
+  const findAccountForResult = async (result) => {
+    const availableAccounts = accountsLoaded ? accounts : await fetchAccounts(accountsApi)
+    const accountId = parseInt(result.account_id, 10)
+
+    return availableAccounts.find(account => account.id === accountId) ||
+      availableAccounts.find(account => String(account.userid) === String(result.userid))
+  }
+
+  const handleShowDetail = async (result) => {
+    const { queryOrderId, isGiftId, title } = getCouponDialogOrderInfo(result)
+
+    if (!queryOrderId) {
+      toast.warning('当前结果缺少订单号或礼物号，无法查询券码')
+      return
+    }
+
+    const requestId = ++couponDialogRequestIdRef.current
+    setCouponDialogOpen(true)
+    setCouponDialogLoading(true)
+    setCouponDialogResult(null)
+    setCouponDialogMeta(null)
+    setCouponDialogTitle(title)
+    setCouponDialogRefreshFn(() => () => handleShowDetail(result))
 
     try {
-      const response = await couponsApi.getDetailByCode(couponCode, { signal: abortController.signal })
-      if (requestId !== detailRequestIdRef.current) return
-      setDetailData(response.data)
-    } catch (error) {
-      if (isAbortError(error)) return
-      if (requestId !== detailRequestIdRef.current) return
-      console.error('获取详情失败:', error)
-      toast.error('获取详情失败: ' + getErrorMessage(error, '未知错误'))
-      setShowDetail(false)
-    } finally {
-      if (detailAbortControllerRef.current === abortController) {
-        detailAbortControllerRef.current = null
+      const account = await findAccountForResult(result)
+
+      if (!account?.userid || !account?.token || !account?.open_id || !account?.open_id_cipher) {
+        toast.warning('当前账号缺少必要信息(openId)，请先在账号管理中重新抓取')
+        if (requestId === couponDialogRequestIdRef.current) {
+          setCouponDialogResult(createErrorQueryResult({
+            source: 'frontend',
+            message: '当前账号缺少必要信息(openId)，无法查询券码'
+          }))
+        }
+        return
       }
-      if (requestId === detailRequestIdRef.current) {
-        setDetailLoading(false)
+
+      const meituanResult = await window.electronAPI.rebateQueryOne({
+        account: {
+          userid: account.userid,
+          token: account.token,
+          csecuuid: account.csecuuid || 'c34d9b03-7520-47e3-9d7c-17a3d930c48d',
+          openId: account.open_id,
+          openIdCipher: account.open_id_cipher
+        },
+        orderId: queryOrderId,
+        isGiftId
+      })
+
+      if (requestId !== couponDialogRequestIdRef.current) return
+
+      if (meituanResult.success && meituanResult.data?.response) {
+        const coupons = Array.isArray(meituanResult.data.response?.data) ? meituanResult.data.response.data : []
+        setCouponDialogResult(createSuccessQueryResult({
+          source: 'frontend',
+          coupons,
+          message: coupons.length > 0 ? `查询成功，获取到 ${coupons.length} 个券码` : '未查询到券码信息'
+        }))
+        setCouponDialogMeta({ source: 'live' })
+      } else {
+        const errorMessage = getErrorMessage(meituanResult, '未知错误')
+        setCouponDialogResult(createErrorQueryResult({
+          source: 'frontend',
+          message: `查询失败: ${errorMessage}`
+        }))
+        toast.error('查询失败: ' + errorMessage)
+      }
+    } catch (error) {
+      if (requestId !== couponDialogRequestIdRef.current) return
+      const errorMessage = getErrorMessage(error, '未知错误')
+      setCouponDialogResult(createErrorQueryResult({
+        source: 'frontend',
+        message: `查询失败: ${errorMessage}`
+      }))
+      toast.error('查询失败: ' + errorMessage)
+    } finally {
+      if (requestId === couponDialogRequestIdRef.current) {
+        setCouponDialogLoading(false)
       }
     }
   }
 
-  // 关闭弹窗
   const handleCloseDetail = () => {
-    setShowDetail(false)
-    setDetailData(null)
+    couponDialogRequestIdRef.current += 1
+    setCouponDialogOpen(false)
+    setCouponDialogResult(null)
+    setCouponDialogMeta(null)
+    setCouponDialogLoading(false)
+    setCouponDialogRefreshFn(null)
   }
 
   const normalizeCouponQueryRow = (row) => ({
@@ -824,7 +904,7 @@ function CouponQueryPage() {
                   <td className="px-4 py-3 text-sm">
                     <div className="flex gap-2">
                       <button
-                        onClick={() => handleShowDetail(result.coupon_code)}
+                        onClick={() => handleShowDetail(result)}
                         className="px-2 py-1 text-xs bg-purple-50 text-purple-600 rounded hover:bg-purple-100"
                         title="查看详情"
                       >
@@ -853,210 +933,15 @@ function CouponQueryPage() {
         </div>
       </div>
 
-      {/* 详情弹窗 */}
-      {showDetail && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={handleCloseDetail}>
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden" onClick={e => e.stopPropagation()}>
-            {/* 弹窗头部 */}
-            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between bg-gray-50">
-              <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                <Info className="w-5 h-5 text-purple-500" />
-                券码详情
-              </h3>
-              <button onClick={handleCloseDetail} className="text-gray-400 hover:text-gray-600">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* 弹窗内容 */}
-            <div className="p-6 overflow-y-auto max-h-[calc(90vh-120px)]">
-              {detailLoading ? (
-                <div className="flex items-center justify-center py-12">
-                  <RefreshCw className="w-8 h-8 animate-spin text-gray-400" />
-                  <span className="ml-2 text-gray-500">加载中...</span>
-                </div>
-              ) : detailData ? (
-                <div className="space-y-6">
-                  {/* 券码信息 */}
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    <h4 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
-                      <FileText className="w-4 h-4" />
-                      券码信息
-                    </h4>
-                    <div className="grid grid-cols-2 gap-4 text-sm">
-                      <div>
-                        <span className="text-gray-500">当前券码：</span>
-                        <span className="font-mono font-medium">{detailData.coupon?.coupon_code || '-'}</span>
-                        {detailData.is_old_code && (
-                          <span className="ml-2 px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded">旧券码查询</span>
-                        )}
-                      </div>
-                      <div>
-                        <span className="text-gray-500">Encode：</span>
-                        <span className="font-mono">{detailData.coupon?.encode || '-'}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">券码状态：</span>
-                        <span className={`px-2 py-0.5 rounded text-xs ${
-                          detailData.coupon?.coupon_status === '待使用' ? 'bg-blue-100 text-blue-700' :
-                          detailData.coupon?.coupon_status === '已使用' ? 'bg-gray-200 text-gray-700' :
-                          'bg-gray-100 text-gray-600'
-                        }`}>
-                          {detailData.coupon?.coupon_status || '-'}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">礼物ID：</span>
-                        <span className="font-mono">{detailData.coupon?.gift_id || '-'}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">最后查询：</span>
-                        <span>{formatDateTime(detailData.coupon?.query_time)}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">创建时间：</span>
-                        <span>{formatDateTime(detailData.coupon?.created_at)}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* 订单信息 */}
-                  {detailData.order && (
-                    <div className="bg-blue-50 rounded-lg p-4">
-                      <h4 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
-                        <FileText className="w-4 h-4 text-blue-500" />
-                        订单信息
-                      </h4>
-                      <div className="grid grid-cols-2 gap-4 text-sm">
-                        <div>
-                          <span className="text-gray-500">订单号：</span>
-                          <span className="font-mono">{detailData.order?.order_view_id || detailData.order?.order_id || '-'}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">标题：</span>
-                          <span className="truncate" title={detailData.order?.title}>{detailData.order?.title || '-'}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">订单金额：</span>
-                          <span className="text-orange-600 font-medium">¥{detailData.order?.order_amount || '-'}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">佣金：</span>
-                          <span className="text-green-600">¥{detailData.order?.commission_fee || '-'}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">券码数量：</span>
-                          <span>{detailData.order?.total_coupon_num || '-'}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">订单状态：</span>
-                          <span>{detailData.order?.showstatus || '-'}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">分类：</span>
-                          <span>{detailData.order?.catename || '-'}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">是否礼物：</span>
-                          <span>{detailData.order?.is_gift ? '是' : '否'}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">下单城市：</span>
-                          <span>{detailData.order?.city_name || '-'}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">支付时间：</span>
-                          <span>{formatDateTime(detailData.order?.order_pay_time)}</span>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* 账号信息 */}
-                  {detailData.account && (
-                    <div className="bg-green-50 rounded-lg p-4">
-                      <h4 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
-                        <User className="w-4 h-4 text-green-500" />
-                        账号信息
-                      </h4>
-                      <div className="grid grid-cols-2 gap-4 text-sm">
-                        <div>
-                          <span className="text-gray-500">账号ID：</span>
-                          <span>{detailData.account?.id}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">备注：</span>
-                          <span>{detailData.account?.remark || '-'}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">MT UserID：</span>
-                          <span className="font-mono">{detailData.account?.userid || '-'}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">账号状态：</span>
-                          <span className={`px-2 py-0.5 rounded text-xs ${
-                            detailData.account?.status === 'normal' ? 'bg-green-100 text-green-700' :
-                            detailData.account?.status === 'invalid' ? 'bg-red-100 text-red-700' :
-                            'bg-yellow-100 text-yellow-700'
-                          }`}>
-                            {detailData.account?.status === 'normal' ? '正常' :
-                             detailData.account?.status === 'invalid' ? '失效' : '未检测'}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">最后检测：</span>
-                          <span>{formatDateTime(detailData.account?.last_check_time)}</span>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* 变更历史 */}
-                  {detailData.change_history && detailData.change_history.length > 0 && (
-                    <div className="bg-orange-50 rounded-lg p-4">
-                      <h4 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
-                        <Clock className="w-4 h-4 text-orange-500" />
-                        变更历史（共 {detailData.change_history.length} 次）
-                      </h4>
-                      <div className="space-y-2">
-                        {detailData.change_history.map((h, idx) => (
-                          <div key={h.id} className="flex items-center gap-3 text-sm bg-white rounded p-2">
-                            <span className="text-gray-400 text-xs w-6">#{idx + 1}</span>
-                            <span className="font-mono text-red-600">{h.old_coupon_code}</span>
-                            <ArrowRight className="w-4 h-4 text-gray-400" />
-                            <span className="font-mono text-green-600">{h.new_coupon_code}</span>
-                            <span className="text-gray-400 text-xs ml-auto">{formatDateTime(h.changed_at)}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* 无变更历史提示 */}
-                  {(!detailData.change_history || detailData.change_history.length === 0) && (
-                    <div className="bg-gray-50 rounded-lg p-4 text-center text-gray-500 text-sm">
-                      <AlertCircle className="w-5 h-5 mx-auto mb-2 text-gray-300" />
-                      暂无变更记录
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="text-center text-gray-500 py-12">暂无数据</div>
-              )}
-            </div>
-
-            {/* 弹窗底部 */}
-            <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end">
-              <button
-                onClick={handleCloseDetail}
-                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
-              >
-                关闭
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <CouponQueryResultDialog
+        open={couponDialogOpen}
+        onClose={handleCloseDetail}
+        titleSuffix={couponDialogTitle}
+        queryResult={couponDialogResult}
+        queryMeta={couponDialogMeta}
+        loading={couponDialogLoading}
+        onRefresh={couponDialogRefreshFn || undefined}
+      />
     </div>
   )
 }

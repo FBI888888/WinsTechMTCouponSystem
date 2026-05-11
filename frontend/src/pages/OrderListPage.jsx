@@ -6,6 +6,7 @@ import { useToastStore } from '../stores/toastStore'
 import { confirm } from '../stores/confirmStore'
 import { formatCountSummary, getErrorMessage, getResultErrorMessage, isAbortError } from '../utils/requestFeedback'
 import { createErrorQueryResult, createSuccessQueryResult, QUERY_RESULT_STATUS } from '../utils/queryResult'
+import CouponQueryResultDialog from '../components/CouponQueryResultDialog'
 
 // 时间范围选项
 const TIME_RANGE_OPTIONS = [
@@ -487,7 +488,7 @@ function OrderListPage() {
         userid: account.userid,
         token: account.token,
         days: timeRange,
-        statusFilter: parseInt(statusFilter) || 0,
+        statusFilter: parseInt(statusFilter) === 5 ? 0 : (parseInt(statusFilter) || 0),
         maxPages: parseInt(maxPages) || 200
       })
 
@@ -960,6 +961,26 @@ function OrderListPage() {
           source: 'live',
           fetchedAt: couponQueryCacheRef.current[cacheKey].fetchedAt
         })
+
+        // 自动落库：保存券码信息并更新查询状态
+        if (coupons.length > 0) {
+          (async () => {
+            try {
+              for (const couponInfo of coupons) {
+                await ordersApi.saveCoupon({
+                  account_id: parseInt(selectedAccountId),
+                  order_id: order.id,
+                  order_view_id: order.order_view_id,
+                  coupon_data: couponInfo,
+                  raw_data: result.data.response
+                })
+              }
+              await ordersApi.updateQueryStatus({ order_ids: [order.id], status: 1 })
+            } catch (e) {
+              console.error('Auto-save coupon error:', e)
+            }
+          })()
+        }
       } else {
         const errorMessage = getResultErrorMessage(result, '未知错误')
         setCouponQueryResult(createErrorQueryResult({
@@ -1142,6 +1163,9 @@ function OrderListPage() {
     if (status.includes('退款')) {
       return 'bg-orange-100 text-orange-800'
     }
+    if (status.includes('礼物已使用')) {
+      return 'bg-purple-100 text-purple-800'
+    }
     return 'bg-gray-100 text-gray-800'
   }
 
@@ -1193,6 +1217,7 @@ function OrderListPage() {
               <option value="2">待使用</option>
               <option value="3">已完成</option>
               <option value="4">退款/售后</option>
+              <option value="5">礼物已使用</option>
             </select>
           </div>
 
@@ -1523,97 +1548,15 @@ function OrderListPage() {
       )}
 
       {/* 查询券码弹窗 */}
-      {couponQueryDialogOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-[600px] max-w-[90vw] max-h-[80vh] bg-white rounded-xl shadow-lg overflow-hidden flex flex-col">
-            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-              <div>
-                <div className="font-medium text-gray-800">
-                  券码查询结果 - 订单 {queryingOrder?.order_id}
-                </div>
-                {couponQueryMeta && (
-                  <div className="text-xs text-gray-500 mt-1">
-                    {couponQueryMeta.source === 'cache' ? '已使用本页缓存结果' : '已完成本地查询'}
-                  </div>
-                )}
-                {couponQueryResult && (
-                  <div className="text-xs text-gray-500 mt-1">
-                    {couponQueryResult.sourceLabel} · {couponQueryResult.status === QUERY_RESULT_STATUS.SUCCESS ? `共 ${couponQueryResult.count} 条` : '失败结果'}
-                  </div>
-                )}
-              </div>
-              <div className="flex items-center gap-3">
-                {queryingOrder && (
-                  <button
-                    onClick={() => queryCouponForOrder(queryingOrder, { forceRefresh: true })}
-                    disabled={couponQueryLoading}
-                    className="text-sm text-orange-600 hover:text-orange-700 disabled:opacity-50"
-                  >
-                    重新查询
-                  </button>
-                )}
-                <button
-                  onClick={() => setCouponQueryDialogOpen(false)}
-                  className="text-sm text-gray-500 hover:text-gray-700"
-                >
-                  关闭
-                </button>
-              </div>
-            </div>
-            <div className="p-5 overflow-auto flex-1">
-              {couponQueryLoading ? (
-                <div className="flex items-center justify-center py-8">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500"></div>
-                  <span className="ml-3 text-gray-600">查询中...</span>
-                </div>
-              ) : couponQueryResult ? (
-                <div className="space-y-4">
-                  {couponQueryResult.status === QUERY_RESULT_STATUS.SUCCESS && couponQueryResult.count > 0 ? (
-                    couponQueryResult.coupons.map((coupon, index) => (
-                      <div key={index} className="bg-gray-50 rounded-lg p-4">
-                        <div className="grid grid-cols-2 gap-3 text-sm">
-                          <div>
-                            <span className="text-gray-500">券码：</span>
-                            <span className="font-mono font-medium">{coupon.couponCode || coupon.coupon || '-'}</span>
-                          </div>
-                          <div>
-                            <span className="text-gray-500">状态：</span>
-                            <span className="font-medium">{coupon.couponStatus || coupon.order_status || coupon.coupon_status || '-'}</span>
-                          </div>
-                          <div>
-                            <span className="text-gray-500">核销时间：</span>
-                            <span>{coupon.verifyTime || '-'}</span>
-                          </div>
-                          <div>
-                            <span className="text-gray-500">核销门店：</span>
-                            <span>{coupon.verifyPoiName || '-'}</span>
-                          </div>
-                          <div>
-                            <span className="text-gray-500">有效期：</span>
-                            <span>{coupon.validStartTime || '-'} 至 {coupon.validEndTime || '-'}</span>
-                          </div>
-                          <div>
-                            <span className="text-gray-500">券码类型：</span>
-                            <span>{coupon.couponType || '-'}</span>
-                          </div>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="text-center text-gray-500 py-8">
-                      {couponQueryResult.message || '未查询到券码信息'}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="text-center text-gray-500 py-8">
-                  无查询结果
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <CouponQueryResultDialog
+        open={couponQueryDialogOpen}
+        onClose={() => setCouponQueryDialogOpen(false)}
+        titleSuffix={queryingOrder ? `订单 ${queryingOrder.order_id}` : ''}
+        queryResult={couponQueryResult}
+        queryMeta={couponQueryMeta}
+        loading={couponQueryLoading}
+        onRefresh={queryingOrder ? () => queryCouponForOrder(queryingOrder, { forceRefresh: true }) : undefined}
+      />
     </div>
   )
 }
