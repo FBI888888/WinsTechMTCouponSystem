@@ -661,7 +661,14 @@ def save_coupon(
     encode = coupon_data.get('encode')
     coupon_status = coupon_data.get('order_status') or coupon_data.get('couponStatus') or coupon_data.get('statusText')
     use_status = coupon_data.get('useStatus')  # 1=寰呬娇鐢? 3=宸蹭娇鐢?
-    gift_id = coupon_data.get('giftId')  # 绀肩墿璁㈠崟鍙兘鏈夊崟鐙殑 giftId
+    gift_id = (
+        coupon_data.get('giftId')
+        or coupon_data.get('gift_id')
+        or coupon_data.get('plainGiftId')
+        or coupon_data.get('gift_id_plain')
+    )  # 礼物订单明文 giftId
+    if gift_id:
+        gift_id = str(gift_id).strip()
 
     # 濡傛灉娌℃湁 coupon_code 浣嗘湁 encode锛屼娇鐢?encode
     if not coupon_code and encode:

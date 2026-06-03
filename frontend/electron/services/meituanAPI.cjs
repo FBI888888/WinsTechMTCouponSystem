@@ -52,7 +52,218 @@ function getSignedUrl(url, data, method = 'POST') {
   }
 }
 
+function isProbablyGiftIdEncrypt(value) {
+  const text = String(value || '').trim()
+  if (!text) return false
+  return /[+/=]/.test(text) || text.startsWith('AwQ')
+}
+
+function isPlainGiftId(value) {
+  const text = String(value || '').trim()
+  if (!text || isProbablyGiftIdEncrypt(text)) return false
+  return /^[a-zA-Z]/.test(text) || text.length > 20
+}
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      return String(value).trim()
+    }
+  }
+  return ''
+}
+
+function extractGiftIdFromRedirectUrl(redirectUrl) {
+  const text = String(redirectUrl || '').trim()
+  if (!text) return ''
+
+  try {
+    const url = new URL(text, 'https://awp.meituan.com')
+    const giftId = url.searchParams.get('giftId')
+    if (giftId) return giftId
+  } catch (_) {}
+
+  const match = text.match(/[?&]giftId=([^&#]+)/)
+  return match ? decodeURIComponent(match[1]) : ''
+}
+
+function extractGiftIdFromGiftReceiveResponse(res) {
+  const nodeDataMap = res?.data?.nodeDataMap || {}
+  const directProps = nodeDataMap.MeishiGiftReceiptBox?.p || nodeDataMap.MeishiGiftReceiptBox?.props
+  const directGiftId = extractGiftIdFromRedirectUrl(directProps?.redirectUrl)
+  if (directGiftId) return directGiftId
+
+  const stack = [res]
+  const seen = new Set()
+  while (stack.length) {
+    const node = stack.pop()
+    if (!node || typeof node !== 'object' || seen.has(node)) continue
+    seen.add(node)
+
+    if (typeof node.redirectUrl === 'string') {
+      const giftId = extractGiftIdFromRedirectUrl(node.redirectUrl)
+      if (giftId) return giftId
+    }
+
+    for (const value of Object.values(node)) {
+      if (value && typeof value === 'object') stack.push(value)
+    }
+  }
+
+  return ''
+}
+
+function applyLocationToPayload(payload, lat, lng) {
+  if (!payload?.pageQuery || !payload?.commonParams?.location) return
+  const latText = String(lat)
+  const lngText = String(lng)
+  const latNumber = parseFloat(latText)
+  const lngNumber = parseFloat(lngText)
+
+  payload.pageQuery.lat = latText
+  payload.pageQuery.lng = lngText
+  payload.pageQuery.latitude = latText
+  payload.pageQuery.longitude = lngText
+  payload.commonParams.location.lat = latNumber
+  payload.commonParams.location.lng = lngNumber
+  payload.commonParams.location.latitude = latNumber
+  payload.commonParams.location.longitude = lngNumber
+}
+
+function printApiFullResponse(label, response) {
+  try {
+    console.log(`[${label}] 接口完整响应:`, JSON.stringify({
+      status: response?.status,
+      statusText: response?.statusText,
+      headers: response?.headers || {},
+      data: response?.data
+    }, null, 2))
+  } catch (error) {
+    console.log(`[${label}] 接口完整响应打印失败:`, error.message)
+  }
+}
+
+function printApiErrorResponse(label, error) {
+  try {
+    console.error(`[${label}] 接口异常响应:`, JSON.stringify({
+      message: error?.message,
+      status: error?.response?.status,
+      statusText: error?.response?.statusText,
+      headers: error?.response?.headers || {},
+      data: error?.response?.data
+    }, null, 2))
+  } catch (printError) {
+    console.error(`[${label}] 接口异常响应打印失败:`, printError.message)
+  }
+}
+
 class MeituanAPI {
+  static async resolveGiftIdFromReceivePreview({ token, giftIdEncrypt, orderId, options, uuid, finger, headers }) {
+    if (!giftIdEncrypt) return ''
+
+    const latitude = options.latitude || options.lat || '41.748709'
+    const longitude = options.longitude || options.lng || '86.159215'
+    const cityId = String(options.cityId || '603')
+    const userAgent = options.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090a13) UnifiedPCWindowsWechat(0xf254181d) XWEB/19201 miniProgram/wxde8ac0a21135c07d'
+    const baseUrl = `https://apimobile.meituan.com/foodtrade/gift/receive/preview?duo_csdk_v=1&page_protocol_version=0001&pre_trace_id=&token=${token}&yodaReady=h5&csecplatform=4&csecversion=4.2.0`
+    const commonParams = {
+      location: {
+        lat: parseFloat(latitude) || 41.748709,
+        lng: parseFloat(longitude) || 86.159215,
+        accuracy: 0
+      },
+      userInfo: {
+        userId: options.userId || '',
+        token,
+        uuid,
+        openId: options.openId || '',
+        wxUnionId: options.unionId || '',
+        uuidV2: options.openId || ''
+      },
+      cityInfo: { cityId, locCityId: cityId },
+      fingerprint: { fingerprint: finger },
+      systemInfo: {
+        version: '',
+        systemVersion: '',
+        device: '',
+        platform: 'android',
+        IS_MT: true,
+        IS_DP: false,
+        IS_TICKET: false,
+        IS_HOTEL: false,
+        isMRN: false,
+        isWeb: true,
+        isWeChatMiniProgram: false,
+        mpAppId: 'wxde8ac0a21135c07d',
+        mpAppVersion: '10.12.1',
+        envInWeb: {
+          isWebInApp: false,
+          isWebInMtApp: false,
+          isWebInDpApp: false,
+          isWebInWeChatMiniProgram: true,
+          isWebInTicketWeChatMiniProgram: false,
+          isWebInMtWeChatMiniProgram: true,
+          isWebInDpWeChatMiniProgram: false,
+          isWebInHotelWeChatMiniProgram: false,
+          isWebInToutiaoMiniProgram: false,
+          isWebInKSMiniProgram: false,
+          isWebInBaiduMiniProgram: false,
+          isWebInDpBaiduMiniProgram: false,
+          isWebInMtBaiduMiniProgram: false,
+          isWebInHarmonyMSCMiniProgram: false
+        },
+        isDebug: false,
+        userAgent
+      },
+      storage: {},
+      isPreview: true,
+      isUpdate: false,
+      isSubmit: false,
+      isCheck: false
+    }
+
+    const payload = {
+      pageQuery: {
+        giftIdEncrypt,
+        orderId: orderId || '',
+        presentPath: options.presentPath || 'wechat',
+        uuid,
+        utm_content: options.utm_content || '0',
+        utm_campaign: options.utm_campaign || '0',
+        mina_name: 'mt-weapp',
+        finger,
+        token,
+        lat: String(latitude),
+        lng: String(longitude),
+        loc_type: 'WX',
+        cityId,
+        cityid: cityId,
+        ci: cityId,
+        rcf_token: options.rcf_token || '5cac67121c9d446c8c2d7b93',
+        rcf_uniqueid: options.rcf_uniqueid || `rcf-default-${Date.now()}`,
+        __lxsdk_params: options.lxsdkParams || options.__lxsdk_params || '',
+        _lx_ver: '3.17.5'
+      },
+      commonParams,
+      prevData: {},
+      nodeDataMap: {},
+      updatePropMap: {},
+      payload: {},
+      cacheDynamicComponent: { protocolVersion: '0001' },
+      pageId: '12431',
+      pageProtocolId: '0013',
+      minifyHttpResponse: '1'
+    }
+
+    const payloadStr = JSON.stringify(payload)
+    const signedUrl = getSignedUrl(baseUrl, payloadStr, 'POST')
+    const response = await axios.post(signedUrl, payload, { headers, timeout: 15000 })
+    printApiFullResponse('礼物ID解析 receive preview', response)
+    const giftId = extractGiftIdFromGiftReceiveResponse(response.data)
+    console.log(`[礼物ID解析] gift receive preview resolved giftId: ${giftId || '-'}`)
+    return giftId
+  }
+
   /**
    * 检查CK状态
    */
@@ -255,22 +466,36 @@ class MeituanAPI {
     // 确保 orderid 是字符串
     const orderIdStr = String(orderid)
     const { longitude, latitude, userId, openId, uuid } = options
+    const giftIdEncrypt = firstNonEmpty(
+      options.giftIdEncrypt,
+      options.gift_id_encrypt,
+      isProbablyGiftIdEncrypt(orderIdStr) ? orderIdStr : ''
+    )
+    const resolvedGiftId = firstNonEmpty(options.giftId, options.gift_id, options.plainGiftId)
 
     // 判断是否为礼物订单（字符串订单号，通常以字母开头或长度超过15位的纯字母数字）
-    const isGift = /^[a-zA-Z]/.test(orderIdStr) || (orderIdStr.length > 20)
+    const isGift = Boolean(resolvedGiftId) || isPlainGiftId(orderIdStr)
 
     console.log('getCouponListByOrderId - orderid:', orderIdStr, '是否礼物订单:', isGift, '经度:', longitude, '纬度:', latitude, 'userId:', userId, 'openId:', openId)
 
-    if (isGift) {
-      return await this.getGiftCouponList(token, orderIdStr, { longitude, latitude, userId, openId, uuid })
+    if (isGift || giftIdEncrypt) {
+      return await this.getGiftCouponList(token, resolvedGiftId || orderIdStr, { ...options, longitude, latitude, userId, openId, uuid, giftIdEncrypt })
     }
 
     const baseUrl = `https://apimobile.meituan.com/foodtrade/order/api/detail/preview?duo_csdk_v=1&page_protocol_version=0001&pre_trace_id=&token=${token}&yodaReady=h5&csecplatform=4&csecversion=4.0.2`
 
     // 构建 location 对象，如果提供了经纬度则使用，否则只有 accuracy
     const locationObj = { accuracy: 0 }
-    if (longitude) locationObj.longitude = parseFloat(longitude)
-    if (latitude) locationObj.latitude = parseFloat(latitude)
+    if (longitude) {
+      const lng = parseFloat(longitude)
+      locationObj.longitude = lng
+      locationObj.lng = lng
+    }
+    if (latitude) {
+      const lat = parseFloat(latitude)
+      locationObj.latitude = lat
+      locationObj.lat = lat
+    }
     console.log('locationObj:', locationObj)
     const payload = {
       pageQuery: {
@@ -371,6 +596,7 @@ class MeituanAPI {
 
         const response = await axios.post(signedUrl, payload, { headers, timeout: 15000 })
         console.log('获取券码 - 响应状态:', response.status)
+        printApiFullResponse('获取券码 detail preview', response)
 
         // 打印 nodeDataMap 中的所有节点名称，帮助调试
         const nodeDataMap = response.data?.data?.nodeDataMap || {}
@@ -404,17 +630,20 @@ class MeituanAPI {
             console.log(`[券码查询] 使用店铺位置重新查询: lat=${extractedShopLocation.lat}, lng=${extractedShopLocation.lng}`)
             await new Promise(r => setTimeout(r, 300))
 
-            // 递归调用，标记已经使用店铺位置重试过
-            const retryResult = await this.getCouponListByOrderId(token, orderid, {
-              longitude: extractedShopLocation.lng,
-              latitude: extractedShopLocation.lat,
-              _shopLocationRetried: true
-            })
+            // 使用店铺位置显式更新同一份payload后重新签名重试
+            const retryPayload = JSON.parse(JSON.stringify(payload))
+            applyLocationToPayload(retryPayload, extractedShopLocation.lat, extractedShopLocation.lng)
+
+            const retryPayloadStr = JSON.stringify(retryPayload)
+            const retrySignedUrl = getSignedUrl(baseUrl, retryPayloadStr, 'POST')
+            const retryResponse = await axios.post(retrySignedUrl, retryPayload, { headers, timeout: 15000 })
+            printApiFullResponse('获取券码 detail preview 店铺位置重试', retryResponse)
+            const retryCoupons = this.parseCouponResponse(retryResponse.data)
 
             // 如果重试后获取到有效券码，返回重试结果（附带shopLocation）
-            if (retryResult.coupons.length > 0 && !this.isAllPlaceholderCoupons(retryResult.coupons)) {
+            if (retryCoupons.length > 0 && !this.isAllPlaceholderCoupons(retryCoupons)) {
               console.log('[券码查询] 使用店铺位置重新查询成功，获取到有效券码')
-              return { coupons: retryResult.coupons, shopLocation: extractedShopLocation }
+              return { coupons: retryCoupons, shopLocation: extractedShopLocation }
             }
             console.log('[券码查询] 使用店铺位置重新查询仍为占位券码，返回原始结果')
           } else {
@@ -434,6 +663,7 @@ class MeituanAPI {
         return { coupons: result, shopLocation: extractedShopLocation }
       } catch (error) {
         console.error(`获取券码列表失败(尝试${retry + 1}):`, error.message, error.response?.status, error.response?.data)
+        printApiErrorResponse('获取券码 detail preview', error)
         lastError = error
 
         // 如果是403错误，标记为风控
@@ -460,6 +690,18 @@ class MeituanAPI {
    */
   static async getGiftCouponList(token, giftId, options = {}) {
     const { longitude, latitude, userId, openId, uuid } = options
+    const giftIdInput = String(giftId || '')
+    const giftIdEncrypt = firstNonEmpty(
+      options.giftIdEncrypt,
+      options.gift_id_encrypt,
+      isProbablyGiftIdEncrypt(giftIdInput) ? giftIdInput : ''
+    )
+    let resolvedGiftId = firstNonEmpty(
+      options.giftId,
+      options.gift_id,
+      options.plainGiftId,
+      isProbablyGiftIdEncrypt(giftIdInput) ? '' : giftIdInput
+    )
     const baseUrl = `https://apimobile.meituan.com/foodtrade/order/api/detail/preview?duo_csdk_v=1&page_protocol_version=0001&pre_trace_id=&token=${token}&yodaReady=h5&csecplatform=4&csecversion=4.2.0`
 
     // 构建 location 对象
@@ -486,7 +728,7 @@ class MeituanAPI {
         lat: latitude || "41.748709",
         lng: longitude || "86.159215",
         finger: finger,
-        giftId: giftId,
+        giftId: resolvedGiftId || giftIdInput,
         rcf_uniqueid: `rcff1d5.60cb98145e36a.acc1d6caf-6c86.24fc73c32-4209.bb9bcae89-7db1.66a67ddd2-9315.cb595a134-default-${Date.now()}`,
         rcf_token: "5cac67121c9d446c8c2d7b93",
         programName: "mt",
@@ -588,6 +830,23 @@ class MeituanAPI {
     const maxRetries = 3
     let lastError = null
 
+    if (!resolvedGiftId && giftIdEncrypt) {
+      const receiveOrderId = firstNonEmpty(options.orderId, options.order_id, options.orderViewId, options.order_view_id)
+      resolvedGiftId = await this.resolveGiftIdFromReceivePreview({
+        token,
+        giftIdEncrypt,
+        orderId: receiveOrderId,
+        options,
+        uuid: uuidValue,
+        finger,
+        headers
+      })
+      if (resolvedGiftId) {
+        payload.pageQuery.giftId = resolvedGiftId
+        payload.pageQuery.giftIdEncrypt = giftIdEncrypt
+      }
+    }
+
     for (let retry = 0; retry < maxRetries; retry++) {
       try {
         const payloadStr = JSON.stringify(payload)
@@ -597,6 +856,7 @@ class MeituanAPI {
 
         const response = await axios.post(signedUrl, payload, { headers, timeout: 15000 })
         console.log('获取礼物券码 - 响应状态:', response.status)
+        printApiFullResponse('获取礼物券码 detail preview', response)
 
         // 检查是否有风控错误
         if (response.data?.code === 403 || response.data?.msg?.includes('风控') || response.data?.message?.includes('风控')) {
@@ -607,8 +867,7 @@ class MeituanAPI {
             continue
           }
         }
-        console.log(JSON.stringify(response.data))
-        const result = this.parseGiftCouponResponse(response.data)
+        const result = this.parseGiftCouponResponse(response.data, resolvedGiftId || payload.pageQuery.giftId || '')
         console.log('获取礼物券码 - 解析结果数量:', result.length)
 
         // 检查是否全部为占位券码 (000000000000)，如果是则尝试使用店铺位置重新查询
@@ -623,17 +882,20 @@ class MeituanAPI {
             console.log(`[礼物券码查询] 使用店铺位置重新查询: lat=${extractedShopLocation.lat}, lng=${extractedShopLocation.lng}`)
             await new Promise(r => setTimeout(r, 300))
 
-            // 递归调用，标记已经使用店铺位置重试过
-            const retryResult = await this.getGiftCouponList(token, giftId, {
-              longitude: extractedShopLocation.lng,
-              latitude: extractedShopLocation.lat,
-              _shopLocationRetried: true
-            })
+            // 使用店铺位置显式更新同一份payload后重新签名重试
+            const retryPayload = JSON.parse(JSON.stringify(payload))
+            applyLocationToPayload(retryPayload, extractedShopLocation.lat, extractedShopLocation.lng)
+
+            const retryPayloadStr = JSON.stringify(retryPayload)
+            const retrySignedUrl = getSignedUrl(baseUrl, retryPayloadStr, 'POST')
+            const retryResponse = await axios.post(retrySignedUrl, retryPayload, { headers, timeout: 15000 })
+            printApiFullResponse('获取礼物券码 detail preview 店铺位置重试', retryResponse)
+            const retryCoupons = this.parseGiftCouponResponse(retryResponse.data, resolvedGiftId || retryPayload.pageQuery.giftId || '')
 
             // 如果重试后获取到有效券码，返回重试结果（附带shopLocation）
-            if (retryResult.coupons.length > 0 && !this.isAllPlaceholderCoupons(retryResult.coupons)) {
+            if (retryCoupons.length > 0 && !this.isAllPlaceholderCoupons(retryCoupons)) {
               console.log('[礼物券码查询] 使用店铺位置重新查询成功，获取到有效券码')
-              return { coupons: retryResult.coupons, shopLocation: extractedShopLocation }
+              return { coupons: retryCoupons, shopLocation: extractedShopLocation }
             }
             console.log('[礼物券码查询] 使用店铺位置重新查询仍为占位券码，返回原始结果')
           } else {
@@ -650,9 +912,10 @@ class MeituanAPI {
         }
 
         // 返回结果，附带提取到的店铺位置和原始响应数据（供调用方缓存复用和风控检测）
-        return { coupons: result, shopLocation: extractedShopLocation, rawData: response.data }
+        return { coupons: result, shopLocation: extractedShopLocation, rawData: response.data, giftId: resolvedGiftId || payload.pageQuery.giftId || '' }
       } catch (error) {
         console.error(`获取礼物券码列表失败(尝试${retry + 1}):`, error.message, error.response?.status)
+        printApiErrorResponse('获取礼物券码 detail preview', error)
         lastError = error
 
         // 如果是403错误，标记为风控
@@ -677,7 +940,7 @@ class MeituanAPI {
   /**
    * 解析普通订单券码响应
    */
-  static parseCouponResponse(res) {
+  static parseCouponResponse(res, giftId = '') {
     const couponsInfoList = []
 
     try {
@@ -770,6 +1033,8 @@ class MeituanAPI {
             coupon: couponCode,
             encode: coupon.encode || '',
             couponId: coupon.id || '',
+            giftId: giftId || coupon.giftId || coupon.gift_id || '',
+            gift_id: giftId || coupon.giftId || coupon.gift_id || '',
             status: verifyInfo
               ? `${couponCode}--核销时间：${verifyTime}--核销门店："${verifyPoiName}"`
               : `${couponCode}--${statusText}`,
@@ -795,7 +1060,7 @@ class MeituanAPI {
   /**
    * 解析礼物订单券码响应
    */
-  static parseGiftCouponResponse(res) {
+  static parseGiftCouponResponse(res, giftId = '') {
     const couponsInfoList = []
 
     try {
@@ -866,6 +1131,8 @@ class MeituanAPI {
             coupon: couponCode,
             encode: coupon.encode || '',
             couponId: coupon.id || '',
+            giftId: giftId || coupon.giftId || coupon.gift_id || '',
+            gift_id: giftId || coupon.giftId || coupon.gift_id || '',
             status: verifyInfo
               ? `${couponCode}--核销时间：${verifyTime}--核销门店："${verifyPoiName}"`
               : `${couponCode}--${statusText}`,

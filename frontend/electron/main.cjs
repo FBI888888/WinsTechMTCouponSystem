@@ -297,7 +297,7 @@ ipcMain.handle('accounts-check-status', async (event, { userid, token }) => {
 })
 
 // Rebate query - 使用 MeituanAPI 获取券码信息
-ipcMain.handle('rebate-query-one', async (event, { account, orderId }) => {
+ipcMain.handle('rebate-query-one', async (event, { account, orderId, giftIdEncrypt }) => {
   try {
     const MeituanAPI = require('./services/meituanAPI.cjs')
 
@@ -306,7 +306,8 @@ ipcMain.handle('rebate-query-one', async (event, { account, orderId }) => {
       latitude: account.latitude,
       userId: account.userid,
       openId: account.openId,
-      uuid: account.csecuuid || 'c34d9b03-7520-47e3-9d7c-17a3d930c48d'
+      uuid: account.csecuuid || 'c34d9b03-7520-47e3-9d7c-17a3d930c48d',
+      giftIdEncrypt: giftIdEncrypt || account.giftIdEncrypt || account.gift_id_encrypt || ''
     })
 
     return { success: true, data: { orderId, response: { data: result.coupons } } }

@@ -334,6 +334,14 @@ class ScheduledTaskService:
                 coupon_record.encode = coupon_info.get("encode", "")
                 coupon_record.coupon_status = coupon_info.get("order_status", "")
                 coupon_record.use_status = coupon_info.get("useStatus")
+                gift_id = (
+                    coupon_info.get("giftId")
+                    or coupon_info.get("gift_id")
+                    or coupon_info.get("plainGiftId")
+                    or coupon_info.get("gift_id_plain")
+                )
+                if gift_id:
+                    coupon_record.gift_id = str(gift_id)
                 coupon_record.raw_data = {"data": raw_coupons}
 
             db.commit()
