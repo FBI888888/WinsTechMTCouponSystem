@@ -21,6 +21,7 @@ from app.schemas.order import (
     CouponSaveRequest,
     PendingCouponQueryResponse,
 )
+from app.schemas.account import GiftClaimSaveRequest
 from app.deps import get_current_user
 from app.routers.stats import invalidate_dashboard_stats_cache
 from app.utils.order_status import (
@@ -718,6 +719,107 @@ def save_coupon(
     return {
         "success": True,
         "message": "Coupon saved successfully"
+    }
+
+
+@router.post("/save-gift-claim")
+def save_gift_claim(
+    request: GiftClaimSaveRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    礼物交单领取成功后原子落库：upsert 礼物订单 + upsert 券码，并更新账号 last_claim_at。
+    """
+    account = db.query(MTAccount).filter(MTAccount.id == request.account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    gift_id = (request.gift_id or "").strip()
+    coupon_code = (request.coupon_code or "").strip()
+    if not gift_id:
+        raise HTTPException(status_code=400, detail="gift_id is required")
+    if not coupon_code:
+        raise HTTPException(status_code=400, detail="coupon_code is required")
+
+    order_key = (request.order_id or gift_id).strip()
+    data_source = (request.data_source or "wxbot_gift_submit").strip() or "wxbot_gift_submit"
+    now = datetime.now()
+
+    order = db.query(Order).filter(
+        Order.account_id == request.account_id,
+        Order.order_id == order_key,
+    ).first()
+    if not order:
+        order = db.query(Order).filter(
+            Order.account_id == request.account_id,
+            Order.order_view_id == gift_id,
+        ).first()
+
+    if order:
+        order.order_view_id = order.order_view_id or gift_id
+        order.is_gift = True
+        order.title = request.title or order.title or f"礼物领取 {gift_id}"
+        order.coupon_query_status = 1
+        order.data_source = data_source
+        order.updated_at = now
+    else:
+        order = Order(
+            account_id=request.account_id,
+            order_id=order_key,
+            order_view_id=gift_id,
+            title=request.title or f"礼物领取 {gift_id}",
+            order_status_bucket="completed",
+            is_gift=True,
+            order_pay_time=now,
+            coupon_query_status=1,
+            data_source=data_source,
+        )
+        db.add(order)
+        db.flush()
+
+    existing = db.query(Coupon).filter(
+        Coupon.order_id == order.id,
+        Coupon.coupon_code == coupon_code,
+    ).first()
+    if existing:
+        existing.encode = request.encode or existing.encode
+        existing.coupon_status = request.coupon_status or existing.coupon_status
+        existing.use_status = request.use_status if request.use_status is not None else existing.use_status
+        existing.gift_id = gift_id
+        existing.raw_data = request.raw_data if request.raw_data is not None else existing.raw_data
+        existing.data_source = data_source
+        existing.query_time = now
+        existing.updated_at = now
+        coupon = existing
+    else:
+        coupon = Coupon(
+            order_id=order.id,
+            account_id=request.account_id,
+            coupon_code=coupon_code,
+            encode=request.encode,
+            coupon_status=request.coupon_status,
+            use_status=request.use_status,
+            gift_id=gift_id,
+            raw_data=request.raw_data,
+            data_source=data_source,
+            query_time=now,
+        )
+        db.add(coupon)
+
+    account.last_claim_at = now
+    db.commit()
+    invalidate_order_list_count_cache()
+    invalidate_dashboard_stats_cache()
+
+    return {
+        "success": True,
+        "message": "Gift claim saved successfully",
+        "order_id": order.id,
+        "coupon_id": coupon.id if coupon.id else None,
+        "gift_id": gift_id,
+        "coupon_code": coupon_code,
+        "account_id": request.account_id,
     }
 
 

@@ -1,7 +1,8 @@
 from typing import List, Optional
-from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import datetime, timedelta
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 import httpx
 from app.database import get_db
 from app.models.user import User
@@ -9,7 +10,8 @@ from app.models.account import MTAccount, AccountStatus
 from app.models.log import OperationLog
 from app.schemas.account import (
     AccountCreate, AccountUpdate, AccountResponse,
-    AccountCaptureRequest, AccountCheckRequest, AccountCheckResponse
+    AccountCaptureRequest, AccountCheckRequest, AccountCheckResponse,
+    AccountCooldownRequest,
 )
 from app.deps import get_current_user
 from app.utils.encryption import encrypt_token, decrypt_token
@@ -163,6 +165,33 @@ def capture_account(
     # 返回时解密
     db_account.token = _decrypt_account_token(db_account.token)
     return db_account
+
+
+@router.get("/available-for-gift", response_model=List[AccountResponse])
+def get_available_accounts_for_gift(
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """返回可用于礼物领取的账号：启用、非失效、冷却已过期或未冷却。"""
+    now = datetime.now()
+    accounts = (
+        db.query(MTAccount)
+        .filter(
+            MTAccount.disabled == 0,
+            MTAccount.status != AccountStatus.INVALID,
+            or_(
+                MTAccount.cooldown_until.is_(None),
+                MTAccount.cooldown_until <= now,
+            ),
+        )
+        .order_by(MTAccount.last_claim_at.is_(None).desc(), MTAccount.last_claim_at.asc(), MTAccount.id.asc())
+        .limit(limit)
+        .all()
+    )
+    for account in accounts:
+        account.token = _decrypt_account_token(account.token)
+    return accounts
 
 
 @router.get("/random-gift-id")
@@ -400,6 +429,68 @@ async def toggle_account_disabled(
     db.commit()
 
     # 返回时解密 Token
+    account.token = _decrypt_account_token(account.token)
+    return account
+
+
+@router.post("/{account_id}/mark-cooldown", response_model=AccountResponse)
+def mark_account_cooldown(
+    account_id: int,
+    request: AccountCooldownRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """标记账号进入礼物领取冷却（通常因 result=1011）。"""
+    account = db.query(MTAccount).filter(MTAccount.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+    hours = request.hours if request.hours and request.hours > 0 else 12
+    now = datetime.now()
+    account.cooldown_until = now + timedelta(hours=hours)
+    account.last_limit_at = now
+    db.commit()
+    db.refresh(account)
+
+    log = OperationLog(
+        user_id=current_user.id,
+        action="mark_account_cooldown",
+        target_type="account",
+        target_id=account.id,
+        details=f"冷却{hours}小时 reason={request.reason or ''}: {account.remark or account.userid}"
+    )
+    db.add(log)
+    db.commit()
+
+    account.token = _decrypt_account_token(account.token)
+    return account
+
+
+@router.post("/{account_id}/clear-cooldown", response_model=AccountResponse)
+def clear_account_cooldown(
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """手动清除账号礼物领取冷却。"""
+    account = db.query(MTAccount).filter(MTAccount.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+    account.cooldown_until = None
+    db.commit()
+    db.refresh(account)
+
+    log = OperationLog(
+        user_id=current_user.id,
+        action="clear_account_cooldown",
+        target_type="account",
+        target_id=account.id,
+        details=f"清除冷却: {account.remark or account.userid}"
+    )
+    db.add(log)
+    db.commit()
+
     account.token = _decrypt_account_token(account.token)
     return account
 

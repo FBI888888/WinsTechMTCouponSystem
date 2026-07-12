@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS `mt_accounts` (
     `disabled` INT NOT NULL DEFAULT 0 COMMENT '是否禁用: 0=启用, 1=禁用',
     `last_check_time` DATETIME DEFAULT NULL COMMENT '最后检测时间',
     `last_scan_time` DATETIME DEFAULT NULL COMMENT '最后扫描时间',
+    `cooldown_until` DATETIME DEFAULT NULL COMMENT '礼物领取冷却截止时间',
+    `last_claim_at` DATETIME DEFAULT NULL COMMENT '最近领取成功时间',
+    `last_limit_at` DATETIME DEFAULT NULL COMMENT '最近收礼上限(1011)时间',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
@@ -47,6 +50,7 @@ CREATE TABLE IF NOT EXISTS `mt_accounts` (
     INDEX `idx_user` (`user_id`),
     INDEX `idx_status` (`status`),
     INDEX `idx_disabled` (`disabled`),
+    INDEX `idx_cooldown_until` (`cooldown_until`),
     FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='美团账号表';
 
@@ -74,6 +78,7 @@ CREATE TABLE IF NOT EXISTS `orders` (
     `gift_return_status` INT NOT NULL DEFAULT 0 COMMENT '礼物退款状态',
     `gift_return_message` VARCHAR(255) DEFAULT NULL COMMENT '礼物退款消息',
     `gift_return_updated_at` DATETIME DEFAULT NULL COMMENT '礼物退款更新时间',
+    `data_source` VARCHAR(32) DEFAULT NULL COMMENT '数据来源: wxbot_gift_submit/scanner/electron',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
@@ -84,6 +89,7 @@ CREATE TABLE IF NOT EXISTS `orders` (
     INDEX `idx_orders_account_coupon_query_paytime_id` (`account_id`, `coupon_query_status`, `order_pay_time`, `id`),
     INDEX `idx_orders_account_status_bucket_paytime_id` (`account_id`, `order_status_bucket`, `order_pay_time`, `id`),
     INDEX `idx_orders_account_order_view_id` (`account_id`, `order_view_id`),
+    INDEX `idx_orders_data_source` (`data_source`),
     FOREIGN KEY (`account_id`) REFERENCES `mt_accounts`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
@@ -101,6 +107,7 @@ CREATE TABLE IF NOT EXISTS `coupons` (
     `gift_id` VARCHAR(50) DEFAULT NULL COMMENT '礼物号',
     `query_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '查询时间',
     `raw_data` JSON DEFAULT NULL COMMENT '原始数据',
+    `data_source` VARCHAR(32) DEFAULT NULL COMMENT '数据来源: wxbot_gift_submit/scanner/electron',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
@@ -110,6 +117,7 @@ CREATE TABLE IF NOT EXISTS `coupons` (
     INDEX `idx_order` (`order_id`),
     INDEX `idx_account` (`account_id`),
     INDEX `idx_coupons_account_query_time` (`account_id`, `query_time`),
+    INDEX `idx_coupons_data_source` (`data_source`),
     UNIQUE KEY `uq_coupons_order_coupon_code` (`order_id`, `coupon_code`),
     FOREIGN KEY (`order_id`) REFERENCES `orders`(`id`) ON DELETE CASCADE,
     FOREIGN KEY (`account_id`) REFERENCES `mt_accounts`(`id`) ON DELETE CASCADE

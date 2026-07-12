@@ -29,6 +29,7 @@ class Order(Base):
     gift_return_status = Column(Integer, default=0)
     gift_return_message = Column(String(255))
     gift_return_updated_at = Column(DateTime)
+    data_source = Column(String(32), nullable=True, index=True)  # wxbot_gift_submit / scanner / electron
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 

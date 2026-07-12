@@ -23,6 +23,7 @@ class OrderBase(BaseModel):
     gift_return_status: Optional[int] = 0
     gift_return_message: Optional[str] = None
     gift_return_updated_at: Optional[datetime] = None
+    data_source: Optional[str] = None
 
 
 class OrderResponse(OrderBase):

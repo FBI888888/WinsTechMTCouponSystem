@@ -1,14 +1,14 @@
 import logging
 import time
-from typing import List
+from typing import List, Optional
 from collections import defaultdict
 import subprocess
 import json
 import os
 import asyncio
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.user import User
@@ -20,6 +20,7 @@ from app.schemas.coupon import (
     CouponResponse, CouponQueryRequest, CouponQueryResponse,
     CouponBackendQueryResponse, CouponBatchUpdateRequest, CouponChangeInfo
 )
+from app.schemas.account import ClaimRecordItem, ClaimRecordListResponse
 from app.deps import get_current_user
 from app.utils.encryption import decrypt_token
 from app.services.coupon_change_service import (
@@ -389,6 +390,87 @@ def get_coupons(
     if account_id:
         query = query.filter(Coupon.account_id == account_id)
     return query.order_by(Coupon.query_time.desc()).offset(skip).limit(limit).all()
+
+
+@router.get("/claim-records", response_model=ClaimRecordListResponse)
+def list_claim_records(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    data_source: Optional[str] = Query("wxbot_gift_submit"),
+    keyword: Optional[str] = Query(None, description="礼物号/券码/账号备注/userid"),
+    gift_id: Optional[str] = None,
+    coupon_code: Optional[str] = None,
+    account_id: Optional[int] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """礼物领取记录（复用 coupons/orders，按 data_source 筛选）。"""
+    query = (
+        db.query(Coupon, Order, MTAccount)
+        .outerjoin(Order, Coupon.order_id == Order.id)
+        .outerjoin(MTAccount, Coupon.account_id == MTAccount.id)
+    )
+
+    if data_source:
+        query = query.filter(Coupon.data_source == data_source)
+    if gift_id:
+        query = query.filter(Coupon.gift_id == gift_id.strip())
+    if coupon_code:
+        query = query.filter(Coupon.coupon_code == coupon_code.strip())
+    if account_id:
+        query = query.filter(Coupon.account_id == account_id)
+    if start_time:
+        query = query.filter(Coupon.created_at >= start_time)
+    if end_time:
+        query = query.filter(Coupon.created_at <= end_time)
+    if keyword:
+        kw = f"%{keyword.strip()}%"
+        query = query.filter(
+            or_(
+                Coupon.gift_id.like(kw),
+                Coupon.coupon_code.like(kw),
+                MTAccount.userid.like(kw),
+                MTAccount.remark.like(kw),
+                Order.order_id.like(kw),
+            )
+        )
+
+    total = query.count()
+    rows = (
+        query.order_by(Coupon.created_at.desc(), Coupon.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    items = []
+    for coupon, order, account in rows:
+        items.append(
+            ClaimRecordItem(
+                id=coupon.id,
+                coupon_code=coupon.coupon_code,
+                gift_id=coupon.gift_id,
+                order_id=order.order_id if order else None,
+                order_db_id=order.id if order else None,
+                account_id=coupon.account_id,
+                account_userid=account.userid if account else None,
+                account_remark=account.remark if account else None,
+                coupon_status=coupon.coupon_status,
+                use_status=coupon.use_status,
+                data_source=coupon.data_source,
+                query_time=coupon.query_time,
+                created_at=coupon.created_at,
+            )
+        )
+
+    return ClaimRecordListResponse(
+        total=total,
+        page=page,
+        page_size=page_size,
+        items=items,
+    )
 
 
 @router.get("/{coupon_id}", response_model=CouponResponse)
