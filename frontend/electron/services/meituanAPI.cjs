@@ -75,6 +75,19 @@ function reinitOnWindControl() {
   } catch (_) {}
 }
 
+function getNodePayload(node) {
+  return node?.props || node?.p || null
+}
+
+function isPlaceholderCouponCode(code) {
+  return String(code || '').replace(/\s/g, '') === '000000000000'
+}
+
+function stripPlaceholderCoupons(list) {
+  if (!Array.isArray(list)) return []
+  return list.filter((c) => !isPlaceholderCouponCode(c?.coupon || c?.code || c?.coupon_code))
+}
+
 function isProbablyGiftIdEncrypt(value) {
   const text = String(value || '').trim()
   if (!text) return false
@@ -657,53 +670,55 @@ class MeituanAPI {
         // 提取店铺位置（无论是否需要重试都提取，以便调用方缓存复用）
         const extractedShopLocation = this.extractShopLocation(response.data)
 
-        // 检查是否全部为占位券码 (000000000000)，如果是则尝试使用店铺位置重新查询
+        // 占位券码：店铺坐标重查 → 微调重查（对齐 mt-qrcode-web 递归写法）
         if (this.isAllPlaceholderCoupons(result) && !options._shopLocationRetried) {
-          console.log('[券码查询] 检测到全部券码为000000000000，尝试提取店铺位置重新查询...')
+          console.log('[券码查询] 检测到占位券码，尝试提取店铺位置重新查询...')
 
-          if (extractedShopLocation && extractedShopLocation.lat && extractedShopLocation.lng) {
-            console.log(`[券码查询] 使用店铺位置重新查询: lat=${extractedShopLocation.lat}, lng=${extractedShopLocation.lng}`)
-            await new Promise(r => setTimeout(r, 300))
-
-            // 使用店铺位置显式更新同一份payload后重新签名重试
-            const retryPayload = JSON.parse(JSON.stringify(payload))
-            applyLocationToPayload(retryPayload, extractedShopLocation.lat, extractedShopLocation.lng)
-
-            const retrySignedUrl = getSignedUrl({ method: 'POST', url: baseUrl, body: retryPayload, cookies: DEFAULT_COOKIES })
-            const retryResponse = await axios.post(retrySignedUrl, retryPayload, { headers, timeout: 15000 })
-            printApiFullResponse('获取券码 detail preview 店铺位置重试', retryResponse)
-            const retryCoupons = this.parseCouponResponse(retryResponse.data)
-
-            // 如果重试后获取到有效券码，返回重试结果（附带shopLocation）
-            if (retryCoupons.length > 0 && !this.isAllPlaceholderCoupons(retryCoupons)) {
-              console.log('[券码查询] 使用店铺位置重新查询成功，获取到有效券码')
-              return { coupons: retryCoupons, shopLocation: extractedShopLocation }
+          if (extractedShopLocation?.lat && extractedShopLocation?.lng) {
+            console.log(`[券码查询] 使用店铺位置重查: lat=${extractedShopLocation.lat}, lng=${extractedShopLocation.lng}`)
+            await new Promise((r) => setTimeout(r, 300))
+            const retryResult = await this.getCouponListByOrderId(token, orderid, {
+              ...options,
+              longitude: extractedShopLocation.lng,
+              latitude: extractedShopLocation.lat,
+              platform,
+              _shopLocationRetried: true,
+            })
+            if (retryResult.coupons?.length > 0 && !this.isAllPlaceholderCoupons(retryResult.coupons)) {
+              console.log('[券码查询] 店铺位置重查成功')
+              return { coupons: retryResult.coupons, shopLocation: extractedShopLocation }
             }
 
-            // 坐标微调二次重查（对齐 mt-qrcode-web）
             const lngNum = parseFloat(extractedShopLocation.lng)
             const latNum = parseFloat(extractedShopLocation.lat)
             if (Number.isFinite(lngNum) && Number.isFinite(latNum)) {
               const tweakedLongitude = (lngNum + 0.00001).toFixed(6)
               const tweakedLatitude = (latNum + 0.00001).toFixed(6)
-              console.log(`[券码查询] 店铺位置重查仍为占位，坐标微调重查: lat=${tweakedLatitude}, lng=${tweakedLongitude}`)
-              await new Promise(r => setTimeout(r, 200))
-              applyLocationToPayload(retryPayload, tweakedLatitude, tweakedLongitude)
-              const tweakSignedUrl = getSignedUrl({ method: 'POST', url: baseUrl, body: retryPayload, cookies: DEFAULT_COOKIES })
-              const tweakResponse = await axios.post(tweakSignedUrl, retryPayload, { headers, timeout: 15000 })
-              printApiFullResponse('获取券码 detail preview 坐标微调重试', tweakResponse)
-              const tweakCoupons = this.parseCouponResponse(tweakResponse.data)
-              if (tweakCoupons.length > 0 && !this.isAllPlaceholderCoupons(tweakCoupons)) {
-                console.log('[券码查询] 坐标微调重查成功，获取到有效券码')
-                return { coupons: tweakCoupons, shopLocation: extractedShopLocation }
+              console.log(`[券码查询] 坐标微调重查: lat=${tweakedLatitude}, lng=${tweakedLongitude}`)
+              await new Promise((r) => setTimeout(r, 200))
+              const tweakedResult = await this.getCouponListByOrderId(token, orderid, {
+                ...options,
+                longitude: tweakedLongitude,
+                latitude: tweakedLatitude,
+                platform,
+                _shopLocationRetried: true,
+              })
+              if (tweakedResult.coupons?.length > 0 && !this.isAllPlaceholderCoupons(tweakedResult.coupons)) {
+                console.log('[券码查询] 坐标微调重查成功')
+                return { coupons: tweakedResult.coupons, shopLocation: extractedShopLocation }
               }
             }
-            console.log('[券码查询] 店铺位置/坐标微调重查仍为占位券码，不返回占位码')
-            return { coupons: [], shopLocation: extractedShopLocation }
           } else {
-            console.log('[券码查询] 未能从响应中提取到店铺位置信息')
-            return { coupons: [], shopLocation: extractedShopLocation }
+            console.log('[券码查询] 检测到占位券码，但未提取到店铺经纬度，无法重查')
           }
+
+          console.log('[券码查询] 所有重查后仍为占位券码，不返回占位码')
+          return { coupons: [], shopLocation: extractedShopLocation }
+        }
+
+        if (this.isAllPlaceholderCoupons(result)) {
+          console.log('[券码查询] 仍为占位券码，不返回占位码')
+          return { coupons: [], shopLocation: extractedShopLocation }
         }
 
         // 如果解析结果为空，可能是风控导致，尝试重试
@@ -715,8 +730,8 @@ class MeituanAPI {
           continue
         }
 
-        // 返回结果，附带提取到的店铺位置（供调用方缓存复用）
-        return { coupons: result, shopLocation: extractedShopLocation }
+        // 返回结果前剥离残留占位码
+        return { coupons: stripPlaceholderCoupons(result), shopLocation: extractedShopLocation }
       } catch (error) {
         console.error(`获取券码列表失败(尝试${retry + 1}):`, error.message, error.response?.status, error.response?.data)
         printApiErrorResponse('获取券码 detail preview', error)
@@ -935,35 +950,80 @@ class MeituanAPI {
         const result = this.parseGiftCouponResponse(response.data, resolvedGiftId || payload.pageQuery.giftId || '')
         console.log('获取礼物券码 - 解析结果数量:', result.length)
 
-        // 检查是否全部为占位券码 (000000000000)，如果是则尝试使用店铺位置重新查询
-        // 检查是否全部为占位券码 (000000000000)，如果是则尝试使用店铺位置重新查询
-        // 提取店铺位置（无论是否需要重试都提取，以便调用方缓存复用）
         const extractedShopLocation = this.extractShopLocation(response.data)
+        const giftPlatform = options.platform || DEFAULT_PLATFORM
 
+        // 占位券码：店铺坐标重查 → 微调重查（对齐 mt-qrcode-web）
         if (this.isAllPlaceholderCoupons(result) && !options._shopLocationRetried) {
-          console.log('[礼物券码查询] 检测到全部券码为000000000000，尝试提取店铺位置重新查询...')
+          console.log('[礼物券码查询] 检测到占位券码，尝试提取店铺位置重新查询...')
+          const giftIdForRetry = resolvedGiftId || payload.pageQuery.giftId || giftIdInput
 
-          if (extractedShopLocation && extractedShopLocation.lat && extractedShopLocation.lng) {
-            console.log(`[礼物券码查询] 使用店铺位置重新查询: lat=${extractedShopLocation.lat}, lng=${extractedShopLocation.lng}`)
-            await new Promise(r => setTimeout(r, 300))
-
-            // 使用店铺位置显式更新同一份payload后重新签名重试
-            const retryPayload = JSON.parse(JSON.stringify(payload))
-            applyLocationToPayload(retryPayload, extractedShopLocation.lat, extractedShopLocation.lng)
-
-            const retrySignedUrl = getSignedUrl({ method: 'POST', url: baseUrl, body: retryPayload, cookies: DEFAULT_COOKIES })
-            const retryResponse = await axios.post(retrySignedUrl, retryPayload, { headers, timeout: 15000 })
-            printApiFullResponse('获取礼物券码 detail preview 店铺位置重试', retryResponse)
-            const retryCoupons = this.parseGiftCouponResponse(retryResponse.data, resolvedGiftId || retryPayload.pageQuery.giftId || '')
-
-            // 如果重试后获取到有效券码，返回重试结果（附带shopLocation）
-            if (retryCoupons.length > 0 && !this.isAllPlaceholderCoupons(retryCoupons)) {
-              console.log('[礼物券码查询] 使用店铺位置重新查询成功，获取到有效券码')
-              return { coupons: retryCoupons, shopLocation: extractedShopLocation }
+          if (extractedShopLocation?.lat && extractedShopLocation?.lng && giftIdForRetry) {
+            console.log(`[礼物券码查询] 使用店铺位置重查: lat=${extractedShopLocation.lat}, lng=${extractedShopLocation.lng}`)
+            await new Promise((r) => setTimeout(r, 300))
+            const retryResult = await this.getGiftCouponList(token, giftIdForRetry, {
+              ...options,
+              giftId: giftIdForRetry,
+              longitude: extractedShopLocation.lng,
+              latitude: extractedShopLocation.lat,
+              platform: giftPlatform,
+              _shopLocationRetried: true,
+            })
+            if (retryResult.coupons?.length > 0 && !this.isAllPlaceholderCoupons(retryResult.coupons)) {
+              console.log('[礼物券码查询] 店铺位置重查成功')
+              return {
+                coupons: retryResult.coupons,
+                shopLocation: extractedShopLocation,
+                rawData: retryResult.rawData,
+                giftId: giftIdForRetry,
+              }
             }
-            console.log('[礼物券码查询] 使用店铺位置重新查询仍为占位券码，返回原始结果')
+
+            const lngNum = parseFloat(extractedShopLocation.lng)
+            const latNum = parseFloat(extractedShopLocation.lat)
+            if (Number.isFinite(lngNum) && Number.isFinite(latNum)) {
+              const tweakedLongitude = (lngNum + 0.00001).toFixed(6)
+              const tweakedLatitude = (latNum + 0.00001).toFixed(6)
+              console.log(`[礼物券码查询] 坐标微调重查: lat=${tweakedLatitude}, lng=${tweakedLongitude}`)
+              await new Promise((r) => setTimeout(r, 200))
+              const tweakedResult = await this.getGiftCouponList(token, giftIdForRetry, {
+                ...options,
+                giftId: giftIdForRetry,
+                longitude: tweakedLongitude,
+                latitude: tweakedLatitude,
+                platform: giftPlatform,
+                _shopLocationRetried: true,
+              })
+              if (tweakedResult.coupons?.length > 0 && !this.isAllPlaceholderCoupons(tweakedResult.coupons)) {
+                console.log('[礼物券码查询] 坐标微调重查成功')
+                return {
+                  coupons: tweakedResult.coupons,
+                  shopLocation: extractedShopLocation,
+                  rawData: tweakedResult.rawData,
+                  giftId: giftIdForRetry,
+                }
+              }
+            }
           } else {
-            console.log('[礼物券码查询] 未能从响应中提取到店铺位置信息')
+            console.log('[礼物券码查询] 检测到占位券码，但未提取到店铺经纬度，无法重查')
+          }
+
+          console.log('[礼物券码查询] 所有重查后仍为占位券码，不返回占位码')
+          return {
+            coupons: [],
+            shopLocation: extractedShopLocation,
+            rawData: response.data,
+            giftId: giftIdForRetry || '',
+          }
+        }
+
+        if (this.isAllPlaceholderCoupons(result)) {
+          console.log('[礼物券码查询] 仍为占位券码，不返回占位码')
+          return {
+            coupons: [],
+            shopLocation: extractedShopLocation,
+            rawData: response.data,
+            giftId: resolvedGiftId || payload.pageQuery.giftId || '',
           }
         }
 
@@ -971,12 +1031,18 @@ class MeituanAPI {
         if (result.length === 0 && retry < maxRetries - 1) {
           console.log('获取礼物券码 - 无券码信息，准备重试...')
           lastError = new Error('NO_COUPON_DATA')
+          reinitOnWindControl()
           await new Promise(r => setTimeout(r, 1000 * (retry + 1)))
           continue
         }
 
         // 返回结果，附带提取到的店铺位置和原始响应数据（供调用方缓存复用和风控检测）
-        return { coupons: result, shopLocation: extractedShopLocation, rawData: response.data, giftId: resolvedGiftId || payload.pageQuery.giftId || '' }
+        return {
+          coupons: stripPlaceholderCoupons(result),
+          shopLocation: extractedShopLocation,
+          rawData: response.data,
+          giftId: resolvedGiftId || payload.pageQuery.giftId || '',
+        }
       } catch (error) {
         console.error(`获取礼物券码列表失败(尝试${retry + 1}):`, error.message, error.response?.status)
         printApiErrorResponse('获取礼物券码 detail preview', error)
@@ -1221,47 +1287,37 @@ class MeituanAPI {
 
   /**
    * 从响应中提取店铺位置信息 (lat/lng)
-   * 用于券码为000000000000时的自动重试
+   * 兼容 node.props / node.p（对齐 mt-qrcode-web）
    */
   static extractShopLocation(res) {
     try {
-      const nodeDataMap = res?.data?.nodeDataMap || {}
+      const ndm = res?.data?.nodeDataMap || {}
 
-      // 尝试从 OrderDetailNoticeModule1.props.shopInfo 获取
-      const noticeModule = nodeDataMap.OrderDetailNoticeModule1?.props
-      let shopInfo = noticeModule?.shopInfo
-
-      if (shopInfo?.lat && shopInfo?.lng) {
-        console.log(`[券码查询] 从OrderDetailNoticeModule1.shopInfo中提取到店铺位置: lat=${shopInfo.lat}, lng=${shopInfo.lng}`)
-        return { lat: String(shopInfo.lat), lng: String(shopInfo.lng) }
+      const notice = getNodePayload(ndm.OrderDetailNoticeModule1)?.shopInfo
+      if (notice?.lat && notice?.lng) {
+        console.log(`[券码查询] 从OrderDetailNoticeModule1.shopInfo中提取到店铺位置: lat=${notice.lat}, lng=${notice.lng}`)
+        return { lat: String(notice.lat), lng: String(notice.lng) }
       }
 
-      // 尝试从 OrderDetailPoi1.props.shopInfo 获取
-      const poiModule = nodeDataMap.OrderDetailPoi1?.props
-      shopInfo = poiModule?.shopInfo
-
-      if (shopInfo?.lat && shopInfo?.lng) {
-        console.log(`[券码查询] 从OrderDetailPoi1.shopInfo中提取到店铺位置: lat=${shopInfo.lat}, lng=${shopInfo.lng}`)
-        return { lat: String(shopInfo.lat), lng: String(shopInfo.lng) }
+      const poi = getNodePayload(ndm.OrderDetailPoi1)?.shopInfo
+      if (poi?.lat && poi?.lng) {
+        console.log(`[券码查询] 从OrderDetailPoi1.shopInfo中提取到店铺位置: lat=${poi.lat}, lng=${poi.lng}`)
+        return { lat: String(poi.lat), lng: String(poi.lng) }
       }
 
-      // 尝试从 OrderDetailNavBar1.props.shopInfo 获取 (兼容旧版本)
-      const navBar = nodeDataMap.OrderDetailNavBar1?.props
-      shopInfo = navBar?.shopInfo
-
-      if (shopInfo?.lat && shopInfo?.lng) {
-        console.log(`[券码查询] 从OrderDetailNavBar1.shopInfo中提取到店铺位置: lat=${shopInfo.lat}, lng=${shopInfo.lng}`)
-        return { lat: String(shopInfo.lat), lng: String(shopInfo.lng) }
+      const navBar = getNodePayload(ndm.OrderDetailNavBar1)
+      const shop = navBar?.shopInfo
+      if (shop?.lat && shop?.lng) {
+        console.log(`[券码查询] 从OrderDetailNavBar1.shopInfo中提取到店铺位置: lat=${shop.lat}, lng=${shop.lng}`)
+        return { lat: String(shop.lat), lng: String(shop.lng) }
       }
 
-      // 尝试从 bizParams.extra 中获取
-      const bizParams = navBar?.bizParams?.extra || {}
-      const poiLat = bizParams.lat || bizParams.poiLat
-      const poiLng = bizParams.lng || bizParams.poiLng
-
-      if (poiLat && poiLng) {
-        console.log(`[券码查询] 从bizParams中提取到店铺位置: lat=${poiLat}, lng=${poiLng}`)
-        return { lat: String(poiLat), lng: String(poiLng) }
+      const extra = navBar?.bizParams?.extra || {}
+      const lat = extra.lat || extra.poiLat
+      const lng = extra.lng || extra.poiLng
+      if (lat && lng) {
+        console.log(`[券码查询] 从bizParams中提取到店铺位置: lat=${lat}, lng=${lng}`)
+        return { lat: String(lat), lng: String(lng) }
       }
     } catch (e) {
       console.error('[券码查询] 提取店铺位置失败:', e.message)
@@ -1270,16 +1326,17 @@ class MeituanAPI {
   }
 
   /**
-   * 检查解析结果是否全部为占位券码 (000000000000)
+   * 检查是否存在占位券码 (000000000000)，对齐 mt-qrcode-web：任一占位即触发
    */
   static isAllPlaceholderCoupons(couponsInfoList) {
     if (!Array.isArray(couponsInfoList) || couponsInfoList.length === 0) {
       return false
     }
-    return couponsInfoList.every(c => {
-      const code = String(c?.coupon || '').replace(/\s/g, '')
-      return code === '000000000000'
-    })
+    return couponsInfoList.some((c) => isPlaceholderCouponCode(c?.coupon || c?.code || c?.coupon_code))
+  }
+
+  static stripPlaceholderCoupons(list) {
+    return stripPlaceholderCoupons(list)
   }
 
   static sleep(ms) {

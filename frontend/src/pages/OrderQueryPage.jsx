@@ -8,7 +8,8 @@ import {
   createErrorQueryResult,
   createSuccessQueryResult,
   markQueryResultSaved,
-  QUERY_RESULT_STATUS
+  QUERY_RESULT_STATUS,
+  stripPlaceholderCoupons
 } from '../utils/queryResult'
 import CouponQueryResultDialog from '../components/CouponQueryResultDialog'
 
@@ -29,7 +30,7 @@ function OrderQueryPage() {
   const [backendLoading, setBackendLoading] = useState(false)
   const [result, setResult] = useState(orderQueryResult)
 
-  // 券码查询结果弹窗状�?
+  // 券码查询结果弹窗状态
   const [couponDialogOpen, setCouponDialogOpen] = useState(false)
   const [couponDialogResult, setCouponDialogResult] = useState(null)
   const [couponDialogMeta, setCouponDialogMeta] = useState(null)
@@ -73,6 +74,10 @@ function OrderQueryPage() {
       toast.warning('请输入订单号')
       return
     }
+    if (!selectedAccount?.open_id) {
+      toast.warning('该账号缺少必要信息(openId)，请先在账号管理中重新抓取')
+      return
+    }
 
     setLoading(true)
     resetResult()
@@ -83,19 +88,21 @@ function OrderQueryPage() {
           userid: selectedAccount.userid,
           token: selectedAccount.token,
           csecuuid: selectedAccount.csecuuid || '',
-          openId: selectedAccount.open_id || '',
-          openIdCipher: selectedAccount.open_id_cipher || '',
+          openId: selectedAccount.open_id,
+          openIdCipher: selectedAccount.open_id_cipher,
           platform: selectedAccount.platform || 'android'
         },
         orderId: orderId.trim()
       })
 
       if (meituanResult.success && Array.isArray(meituanResult.data?.response?.data)) {
-        const coupons = meituanResult.data.response.data
+        const coupons = stripPlaceholderCoupons(meituanResult.data.response.data)
         const queryResult = createSuccessQueryResult({
           source: 'frontend',
           coupons,
-          message: `查询成功，获取到 ${coupons.length} 个券码`,
+          message: coupons.length > 0
+            ? `查询成功，获取到 ${coupons.length} 个券码`
+            : '未查询到券码信息',
           meta: buildQueryMeta()
         })
         setResult(queryResult)
@@ -255,12 +262,12 @@ function OrderQueryPage() {
   const handleCopy = async (coupon, index) => {
     const lines = []
 
-    if (coupon.coupon) lines.push(`券码�?{coupon.coupon}`)
-    if (coupon.encode && coupon.encode !== coupon.coupon) lines.push(`编码�?{coupon.encode}`)
+    if (coupon.coupon) lines.push(`券码：${coupon.coupon}`)
+    if (coupon.encode && coupon.encode !== coupon.coupon) lines.push(`编码：${coupon.encode}`)
     lines.push(`状态：${coupon.order_status || coupon.coupon_status || '-'}`)
-    if (coupon.title) lines.push(`商品�?{coupon.title}`)
-    if (coupon.verifyTime) lines.push(`核销时间�?{coupon.verifyTime}`)
-    if (coupon.verifyPoiName) lines.push(`核销门店�?{coupon.verifyPoiName}`)
+    if (coupon.title) lines.push(`商品：${coupon.title}`)
+    if (coupon.verifyTime) lines.push(`核销时间：${coupon.verifyTime}`)
+    if (coupon.verifyPoiName) lines.push(`核销门店：${coupon.verifyPoiName}`)
     lines.push(`订单号：${orderId.trim()}`)
 
     const text = lines.join('\n')
@@ -269,7 +276,7 @@ function OrderQueryPage() {
       await navigator.clipboard.writeText(text)
       const btn = document.getElementById(`order-copy-btn-${index}`)
       if (btn) {
-        btn.textContent = '已复�?
+        btn.textContent = '已复制'
         setTimeout(() => { btn.textContent = '复制' }, 1500)
       }
     } catch {
@@ -277,7 +284,7 @@ function OrderQueryPage() {
     }
   }
 
-  // 按订单查询券码（用于“详情”按钮，复用 OrderListPage 右键菜单逻辑�?
+  // 按订单查询券码（用于“详情”按钮，复用 OrderListPage 右键菜单逻辑）
   const queryCouponForOrder = async (coupon, options = {}) => {
     const { forceRefresh = false } = options
 
@@ -298,6 +305,10 @@ function OrderQueryPage() {
       toast.warning('请输入订单号')
       return
     }
+    if (!selectedAccount?.open_id || !selectedAccount?.open_id_cipher) {
+      toast.warning('当前账号缺少必要信息(openId)，请先在账号管理中重新抓取')
+      return
+    }
 
     setCouponDialogLoading(true)
     setCouponDialogResult(null)
@@ -312,15 +323,17 @@ function OrderQueryPage() {
           userid: selectedAccount.userid,
           token: selectedAccount.token,
           csecuuid: selectedAccount.csecuuid || '',
-          openId: selectedAccount.open_id || '',
-          openIdCipher: selectedAccount.open_id_cipher || '',
+          openId: selectedAccount.open_id,
+          openIdCipher: selectedAccount.open_id_cipher,
           platform: selectedAccount.platform || 'android'
         },
         orderId: orderId.trim()
       })
 
       if (meituanResult.success && meituanResult.data?.response) {
-        const coupons = Array.isArray(meituanResult.data.response?.data) ? meituanResult.data.response.data : []
+        const coupons = stripPlaceholderCoupons(
+          Array.isArray(meituanResult.data.response?.data) ? meituanResult.data.response.data : []
+        )
         const queryResult = createSuccessQueryResult({
           source: 'frontend',
           coupons,
@@ -367,8 +380,8 @@ function OrderQueryPage() {
 
   const getCouponStatusTone = (coupon) => {
     const status = coupon.order_status || coupon.coupon_status || ''
-    if (status.includes('�?)) return 'bg-blue-100 text-blue-800'
-    if (status.includes('�?)) return 'bg-gray-100 text-gray-700'
+    if (status.includes('待')) return 'bg-blue-100 text-blue-800'
+    if (status.includes('已')) return 'bg-gray-100 text-gray-700'
     return 'bg-gray-100 text-gray-800'
   }
 
@@ -393,7 +406,7 @@ function OrderQueryPage() {
           </div>
 
           <div className="min-w-[300px] flex-1">
-            <label className="block text-xs text-gray-500 mb-1">订单�?/label>
+            <label className="block text-xs text-gray-500 mb-1">订单号</label>
             <input
               type="text"
               value={orderId}
@@ -438,10 +451,10 @@ function OrderQueryPage() {
               <span className="text-sm text-gray-600">{result.message}</span>
               <span className="text-xs text-blue-500">({result.sourceLabel})</span>
               {result.saved && (
-                <span className="text-xs text-green-600">(已保�?</span>
+                <span className="text-xs text-green-600">(已保存)</span>
               )}
               {result.status === QUERY_RESULT_STATUS.SUCCESS && (
-                <span className="text-xs text-gray-500">�?{result.count} �?/span>
+                <span className="text-xs text-gray-500">共 {result.count} 条</span>
               )}
             </div>
 
@@ -463,7 +476,7 @@ function OrderQueryPage() {
                   <tr>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">券码</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">编码</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">状�?/th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">状态</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">标题</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">核销时间</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">核销门店</th>
@@ -514,8 +527,8 @@ function OrderQueryPage() {
           ) : (
             <div className="flex-1 flex items-center justify-center text-gray-500">
               {result.status === QUERY_RESULT_STATUS.SUCCESS
-                ? '该订单没有可展示的券�?
-                : '查询失败，请检查订单号或账号信�?}
+                ? '该订单没有可展示的券码'
+                : '查询失败，请检查订单号或账号信息'}
             </div>
           )}
         </div>

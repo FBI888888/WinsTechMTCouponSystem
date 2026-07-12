@@ -4,7 +4,7 @@ import { Play, Download, Trash2, RefreshCw, Database, ArrowRight } from 'lucide-
 import { useDataStore } from '../stores/dataStore'
 import { useToastStore } from '../stores/toastStore'
 import { getErrorMessage, isAbortError } from '../utils/requestFeedback'
-import { createErrorQueryResult, createSuccessQueryResult, QUERY_RESULT_STATUS } from '../utils/queryResult'
+import { createErrorQueryResult, createSuccessQueryResult, QUERY_RESULT_STATUS, stripPlaceholderCoupons } from '../utils/queryResult'
 import CouponQueryResultDialog from '../components/CouponQueryResultDialog'
 
 function CouponQueryPage() {
@@ -122,7 +122,9 @@ function CouponQueryPage() {
       if (requestId !== couponDialogRequestIdRef.current) return
 
       if (meituanResult.success && meituanResult.data?.response) {
-        const coupons = Array.isArray(meituanResult.data.response?.data) ? meituanResult.data.response.data : []
+        const coupons = stripPlaceholderCoupons(
+          Array.isArray(meituanResult.data.response?.data) ? meituanResult.data.response.data : []
+        )
         setCouponDialogResult(createSuccessQueryResult({
           source: 'frontend',
           coupons,
@@ -300,7 +302,7 @@ function CouponQueryPage() {
           if (requestId !== couponResultsRequestIdRef.current) return
 
           if (meituanResult.success && meituanResult.data?.response?.data) {
-            const coupons = meituanResult.data.response.data
+            const coupons = stripPlaceholderCoupons(meituanResult.data.response.data)
             const actualCode = item.current_coupon_code || item.coupon_code
             const matchedCoupon = coupons.find(c =>
               c.coupon === actualCode ||

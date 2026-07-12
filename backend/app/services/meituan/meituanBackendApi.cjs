@@ -103,14 +103,25 @@ function buildLocationObject(longitude, latitude) {
   return locationObj
 }
 
+function getNodePayload(node) {
+  return node?.props || node?.p || null
+}
+
+function isPlaceholderCouponCode(code) {
+  return String(code || '').replace(/\s/g, '') === '000000000000'
+}
+
+function stripPlaceholderCoupons(list) {
+  if (!Array.isArray(list)) return []
+  return list.filter((c) => !isPlaceholderCouponCode(c?.coupon || c?.code || c?.coupon_code))
+}
+
+/** 任一占位券码即触发（对齐 mt-qrcode-web） */
 function isAllPlaceholderCoupons(couponsInfoList) {
   if (!Array.isArray(couponsInfoList) || couponsInfoList.length === 0) {
     return false
   }
-  return couponsInfoList.every(c => {
-    const code = String(c?.coupon || '').replace(/\s/g, '')
-    return code === '000000000000'
-  })
+  return couponsInfoList.some((c) => isPlaceholderCouponCode(c?.coupon || c?.code || c?.coupon_code))
 }
 
 function isProbablyGiftIdEncrypt(value) {
@@ -179,40 +190,37 @@ function extractGiftIdFromGiftReceiveResponse(res) {
 
 /**
  * 从响应中提取店铺位置信息 (lat/lng)
- * 用于券码为000000000000时的自动重试
+ * 兼容 node.props / node.p（对齐 mt-qrcode-web）
  */
 function extractShopLocation(res) {
   try {
-    const nodeDataMap = res?.data?.nodeDataMap || {}
+    const ndm = res?.data?.nodeDataMap || {}
 
-    // 尝试从 OrderDetailNoticeModule1.props.shopInfo 获取
-    let shopInfo = nodeDataMap.OrderDetailNoticeModule1?.props?.shopInfo
-    if (shopInfo?.lat && shopInfo?.lng) {
-      debugLog(`[Backend API] 从OrderDetailNoticeModule1.shopInfo中提取到店铺位置: lat=${shopInfo.lat}, lng=${shopInfo.lng}`)
-      return { lat: String(shopInfo.lat), lng: String(shopInfo.lng) }
+    const notice = getNodePayload(ndm.OrderDetailNoticeModule1)?.shopInfo
+    if (notice?.lat && notice?.lng) {
+      debugLog(`[Backend API] 从OrderDetailNoticeModule1.shopInfo中提取到店铺位置: lat=${notice.lat}, lng=${notice.lng}`)
+      return { lat: String(notice.lat), lng: String(notice.lng) }
     }
 
-    // 尝试从 OrderDetailPoi1.props.shopInfo 获取
-    shopInfo = nodeDataMap.OrderDetailPoi1?.props?.shopInfo
-    if (shopInfo?.lat && shopInfo?.lng) {
-      debugLog(`[Backend API] 从OrderDetailPoi1.shopInfo中提取到店铺位置: lat=${shopInfo.lat}, lng=${shopInfo.lng}`)
-      return { lat: String(shopInfo.lat), lng: String(shopInfo.lng) }
+    const poi = getNodePayload(ndm.OrderDetailPoi1)?.shopInfo
+    if (poi?.lat && poi?.lng) {
+      debugLog(`[Backend API] 从OrderDetailPoi1.shopInfo中提取到店铺位置: lat=${poi.lat}, lng=${poi.lng}`)
+      return { lat: String(poi.lat), lng: String(poi.lng) }
     }
 
-    // 尝试从 OrderDetailNavBar1.props.shopInfo 获取 (兼容旧版本)
-    shopInfo = nodeDataMap.OrderDetailNavBar1?.props?.shopInfo
-    if (shopInfo?.lat && shopInfo?.lng) {
-      debugLog(`[Backend API] 从OrderDetailNavBar1.shopInfo中提取到店铺位置: lat=${shopInfo.lat}, lng=${shopInfo.lng}`)
-      return { lat: String(shopInfo.lat), lng: String(shopInfo.lng) }
+    const navBar = getNodePayload(ndm.OrderDetailNavBar1)
+    const shop = navBar?.shopInfo
+    if (shop?.lat && shop?.lng) {
+      debugLog(`[Backend API] 从OrderDetailNavBar1.shopInfo中提取到店铺位置: lat=${shop.lat}, lng=${shop.lng}`)
+      return { lat: String(shop.lat), lng: String(shop.lng) }
     }
 
-    // 尝试从 bizParams.extra 中获取
-    const bizParams = nodeDataMap.OrderDetailNavBar1?.props?.bizParams?.extra || {}
-    const poiLat = bizParams.lat || bizParams.poiLat
-    const poiLng = bizParams.lng || bizParams.poiLng
-    if (poiLat && poiLng) {
-      debugLog(`[Backend API] 从bizParams中提取到店铺位置: lat=${poiLat}, lng=${poiLng}`)
-      return { lat: String(poiLat), lng: String(poiLng) }
+    const extra = navBar?.bizParams?.extra || {}
+    const lat = extra.lat || extra.poiLat
+    const lng = extra.lng || extra.poiLng
+    if (lat && lng) {
+      debugLog(`[Backend API] 从bizParams中提取到店铺位置: lat=${lat}, lng=${lng}`)
+      return { lat: String(lat), lng: String(lng) }
     }
   } catch (e) {
     console.error('[Backend API] 提取店铺位置失败:', e.message)
@@ -542,6 +550,10 @@ async function getNormalCouponList(token, orderIdStr, options = {}) {
           return { success: true, coupons: [], giftId: '', shopLocation: extractedShopLocation }
         }
 
+        if (isAllPlaceholderCoupons(coupons)) {
+          return { success: true, coupons: [], giftId: '', shopLocation: extractedShopLocation }
+        }
+
         if (coupons.length === 0 && retry < maxRetries - 1) {
           lastError = new Error('NO_COUPON_DATA')
           reinitOnWindControl()
@@ -549,7 +561,12 @@ async function getNormalCouponList(token, orderIdStr, options = {}) {
           continue
         }
 
-        return { success: true, coupons, giftId: '', shopLocation: extractedShopLocation }
+        return {
+          success: true,
+          coupons: stripPlaceholderCoupons(coupons),
+          giftId: '',
+          shopLocation: extractedShopLocation,
+        }
       } catch (error) {
         lastError = error
         if (error.response?.status === 403 || error.response?.status === 418) {
@@ -728,30 +745,61 @@ async function getGiftCouponList(token, giftId, options = {}) {
 
         const coupons = parseCouponResponse(response.data, resolvedGiftId || payload.pageQuery.giftId || '')
         const extractedShopLocation = extractShopLocation(response.data)
+        const giftIdForRetry = resolvedGiftId || payload.pageQuery.giftId || ''
 
-        if (isAllPlaceholderCoupons(coupons) && !options._shopLocationRetried && extractedShopLocation?.lat && extractedShopLocation?.lng) {
-          debugLog(`[Backend API] 礼物占位券码，店铺位置重查`)
-          await new Promise((r) => setTimeout(r, 300))
-          const retryPayload = JSON.parse(JSON.stringify(payload))
-          applyLocationToPayload(retryPayload, extractedShopLocation.lat, extractedShopLocation.lng)
-          const retrySignedUrl = getSignedUrl({ method: 'POST', url: baseUrl, body: retryPayload, cookies: DEFAULT_COOKIES })
-          const retryResponse = await axiosClient.post(retrySignedUrl, retryPayload, { headers })
-          const retryCoupons = parseCouponResponse(retryResponse.data, resolvedGiftId || retryPayload.pageQuery.giftId || '')
-          if (retryCoupons.length > 0 && !isAllPlaceholderCoupons(retryCoupons)) {
-            return { success: true, coupons: retryCoupons, giftId: resolvedGiftId || retryPayload.pageQuery.giftId || '' }
+        if (isAllPlaceholderCoupons(coupons) && !options._shopLocationRetried) {
+          debugLog('[Backend API] 礼物占位券码，尝试店铺位置重查')
+
+          if (extractedShopLocation?.lat && extractedShopLocation?.lng && giftIdForRetry) {
+            debugLog(`[Backend API] 礼物占位券码，店铺位置重查: lat=${extractedShopLocation.lat}, lng=${extractedShopLocation.lng}`)
+            await new Promise((r) => setTimeout(r, 300))
+            const shopResult = await getGiftCouponList(token, giftIdForRetry, {
+              ...options,
+              giftId: giftIdForRetry,
+              longitude: extractedShopLocation.lng,
+              latitude: extractedShopLocation.lat,
+              _shopLocationRetried: true,
+            })
+            if (shopResult.success && shopResult.coupons.length > 0 && !isAllPlaceholderCoupons(shopResult.coupons)) {
+              return { ...shopResult, shopLocation: extractedShopLocation }
+            }
+
+            const lngNum = parseFloat(extractedShopLocation.lng)
+            const latNum = parseFloat(extractedShopLocation.lat)
+            if (Number.isFinite(lngNum) && Number.isFinite(latNum)) {
+              const tweakedLongitude = (lngNum + 0.00001).toFixed(6)
+              const tweakedLatitude = (latNum + 0.00001).toFixed(6)
+              debugLog(`[Backend API] 礼物坐标微调重查: lat=${tweakedLatitude}, lng=${tweakedLongitude}`)
+              await new Promise((r) => setTimeout(r, 200))
+              const tweakedResult = await getGiftCouponList(token, giftIdForRetry, {
+                ...options,
+                giftId: giftIdForRetry,
+                longitude: tweakedLongitude,
+                latitude: tweakedLatitude,
+                _shopLocationRetried: true,
+              })
+              if (tweakedResult.success && tweakedResult.coupons.length > 0 && !isAllPlaceholderCoupons(tweakedResult.coupons)) {
+                return { ...tweakedResult, shopLocation: extractedShopLocation }
+              }
+            }
+          } else {
+            debugLog('[Backend API] 礼物占位券码但未提取到店铺经纬度')
           }
 
-          const lngNum = parseFloat(extractedShopLocation.lng)
-          const latNum = parseFloat(extractedShopLocation.lat)
-          if (Number.isFinite(lngNum) && Number.isFinite(latNum)) {
-            await new Promise((r) => setTimeout(r, 200))
-            applyLocationToPayload(retryPayload, (latNum + 0.00001).toFixed(6), (lngNum + 0.00001).toFixed(6))
-            const tweakSignedUrl = getSignedUrl({ method: 'POST', url: baseUrl, body: retryPayload, cookies: DEFAULT_COOKIES })
-            const tweakResponse = await axiosClient.post(tweakSignedUrl, retryPayload, { headers })
-            const tweakCoupons = parseCouponResponse(tweakResponse.data, resolvedGiftId || retryPayload.pageQuery.giftId || '')
-            if (tweakCoupons.length > 0 && !isAllPlaceholderCoupons(tweakCoupons)) {
-              return { success: true, coupons: tweakCoupons, giftId: resolvedGiftId || retryPayload.pageQuery.giftId || '' }
-            }
+          return {
+            success: true,
+            coupons: [],
+            giftId: giftIdForRetry,
+            shopLocation: extractedShopLocation,
+          }
+        }
+
+        if (isAllPlaceholderCoupons(coupons)) {
+          return {
+            success: true,
+            coupons: [],
+            giftId: giftIdForRetry,
+            shopLocation: extractedShopLocation,
           }
         }
 
@@ -762,7 +810,12 @@ async function getGiftCouponList(token, giftId, options = {}) {
           continue
         }
 
-        return { success: true, coupons, giftId: resolvedGiftId || payload.pageQuery.giftId || '' }
+        return {
+          success: true,
+          coupons: stripPlaceholderCoupons(coupons),
+          giftId: giftIdForRetry,
+          shopLocation: extractedShopLocation,
+        }
       } catch (error) {
         lastError = error
         if (error.response?.status === 403 || error.response?.status === 418) {

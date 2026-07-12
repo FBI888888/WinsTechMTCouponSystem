@@ -199,7 +199,8 @@ class ScheduledTaskService:
 
         for coupon_info in raw_coupons or []:
             coupon_code = str(coupon_info.get("coupon", "") or "").strip()
-            if not coupon_code or coupon_code in seen_coupon_codes:
+            # 剥离占位券码，避免入库/标记成功
+            if not coupon_code or coupon_code == "000000000000" or coupon_code in seen_coupon_codes:
                 continue
             seen_coupon_codes.add(coupon_code)
             normalized_coupons.append(coupon_info)

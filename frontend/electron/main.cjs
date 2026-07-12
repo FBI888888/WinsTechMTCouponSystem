@@ -311,7 +311,11 @@ ipcMain.handle('rebate-query-one', async (event, { account, orderId, giftIdEncry
       giftIdEncrypt: giftIdEncrypt || account.giftIdEncrypt || account.gift_id_encrypt || ''
     })
 
-    return { success: true, data: { orderId, response: { data: result.coupons } } }
+    const coupons = Array.isArray(result.coupons)
+      ? result.coupons.filter((c) => String(c?.coupon || c?.code || c?.coupon_code || '').replace(/\s/g, '') !== '000000000000')
+      : []
+
+    return { success: true, data: { orderId, response: { data: coupons }, shopLocation: result.shopLocation || null } }
   } catch (error) {
     log('ERROR', `Rebate query error: ${error.message}`)
     return { success: false, error: error.message }

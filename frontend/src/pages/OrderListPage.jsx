@@ -5,18 +5,18 @@ import { useDataStore } from '../stores/dataStore'
 import { useToastStore } from '../stores/toastStore'
 import { confirm } from '../stores/confirmStore'
 import { formatCountSummary, getErrorMessage, getResultErrorMessage, isAbortError } from '../utils/requestFeedback'
-import { createErrorQueryResult, createSuccessQueryResult, QUERY_RESULT_STATUS } from '../utils/queryResult'
+import { createErrorQueryResult, createSuccessQueryResult, QUERY_RESULT_STATUS, stripPlaceholderCoupons } from '../utils/queryResult'
 import CouponQueryResultDialog from '../components/CouponQueryResultDialog'
 
 // 时间范围选项
 const TIME_RANGE_OPTIONS = [
-  { value: 7, label: '近一�? },
+  { value: 7, label: '近一周' },
   { value: 30, label: '近一个月' },
   { value: 90, label: '近三个月' },
-  { value: 180, label: '近半�? },
-  { value: 365, label: '近一�? },
-  { value: 730, label: '近两�? },
-  { value: 1095, label: '近三�? }
+  { value: 180, label: '近半年' },
+  { value: 365, label: '近一年' },
+  { value: 730, label: '近两年' },
+  { value: 1095, label: '近三年' }
 ]
 
 const ORDER_SYNC_SAVE_BATCH_SIZE = 500
@@ -37,7 +37,7 @@ function OrderListPage() {
   } = useDataStore()
   const toast = useToastStore()
 
-  // 本地状�?
+  // 本地状态
   const [loading, setLoading] = useState(false)
   const [maxPages, setMaxPages] = useState(200)
   const [timeRange, setTimeRange] = useState(30) // 默认近一个月
@@ -54,9 +54,9 @@ function OrderListPage() {
   const [debouncedOrderSearchKeyword, setDebouncedOrderSearchKeyword] = useState('')
   const [debouncedTitleSearchKeyword, setDebouncedTitleSearchKeyword] = useState('')
 
-  // 右键菜单状�?
+  // 右键菜单状态
   const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, order: null })
-  // 查询券码弹窗状�?
+  // 查询券码弹窗状态
   const [couponQueryDialogOpen, setCouponQueryDialogOpen] = useState(false)
   const [queryingOrder, setQueryingOrder] = useState(null)
   const [couponQueryResult, setCouponQueryResult] = useState(null)
@@ -135,9 +135,9 @@ function OrderListPage() {
       payload?.errorMsg ||
       fallbackMessage
 
-    if (!message) return '退还失�?
-    if (message.includes('参数') || message.includes('缺失')) return `退还失�? ${message}`
-    if (message.includes('token') || message.includes('Token')) return `退还失�? ${message}`
+    if (!message) return '退还失败'
+    if (message.includes('参数') || message.includes('缺失')) return `退还失败: ${message}`
+    if (message.includes('token') || message.includes('Token')) return `退还失败: ${message}`
     return message
   }
 
@@ -163,25 +163,25 @@ function OrderListPage() {
       case 1:
         return {
           status: 'success',
-          message: order?.gift_return_message || '礼物已退�?,
+          message: order?.gift_return_message || '礼物已退还',
           updatedAt: order?.gift_return_updated_at ? new Date(order.gift_return_updated_at).getTime() : 0
         }
       case 2:
         return {
           status: 'risk',
-          message: order?.gift_return_message || '触发风控，请完成验证后重�?,
+          message: order?.gift_return_message || '触发风控，请完成验证后重试',
           updatedAt: order?.gift_return_updated_at ? new Date(order.gift_return_updated_at).getTime() : 0
         }
       case 3:
         return {
           status: 'error',
-          message: order?.gift_return_message || '礼物退还失�?,
+          message: order?.gift_return_message || '礼物退还失败',
           updatedAt: order?.gift_return_updated_at ? new Date(order.gift_return_updated_at).getTime() : 0
         }
       case 4:
         return {
           status: 'pending',
-          message: order?.gift_return_message || '正在退还礼�?..',
+          message: order?.gift_return_message || '正在退还礼物...',
           updatedAt: order?.gift_return_updated_at ? new Date(order.gift_return_updated_at).getTime() : 0
         }
       default:
@@ -197,15 +197,15 @@ function OrderListPage() {
     const statusEntry = getGiftReturnStatus(order)
     switch (statusEntry?.status) {
       case 'pending':
-        return { text: '处理�?, className: 'bg-blue-50 text-blue-700 animate-pulse', title: statusEntry.message || '正在退还礼�? }
+        return { text: '处理中', className: 'bg-blue-50 text-blue-700 animate-pulse', title: statusEntry.message || '正在退还礼物' }
       case 'success':
-        return { text: '已退�?, className: 'bg-green-50 text-green-700', title: statusEntry.message || '礼物已退�? }
+        return { text: '已退还', className: 'bg-green-50 text-green-700', title: statusEntry.message || '礼物已退还' }
       case 'risk':
-        return { text: '风控', className: 'bg-amber-50 text-amber-700', title: statusEntry.message || '触发风控，请完成验证后重�? }
+        return { text: '风控', className: 'bg-amber-50 text-amber-700', title: statusEntry.message || '触发风控，请完成验证后重试' }
       case 'error':
-        return { text: '失败', className: 'bg-red-50 text-red-700', title: statusEntry.message || '礼物退还失�? }
+        return { text: '失败', className: 'bg-red-50 text-red-700', title: statusEntry.message || '礼物退还失败' }
       default:
-        return { text: '可退�?, className: 'bg-gray-100 text-gray-600', title: '礼物订单，可通过右键菜单退�? }
+        return { text: '可退还', className: 'bg-gray-100 text-gray-600', title: '礼物订单，可通过右键菜单退还' }
     }
   }
 
@@ -274,7 +274,7 @@ function OrderListPage() {
 
     try {
       const data = await fetchAccounts(accountsApi)
-      // 只有在没有选择任何账号时，才设置默认账号为第一�?
+      // 只有在没有选择任何账号时，才设置默认账号为第一个
       if (data && data.length > 0 && !orderSelectedAccountId) {
         setOrderSelectedAccountId(String(data[0].id))
       }
@@ -509,14 +509,14 @@ function OrderListPage() {
         if (Array.isArray(orderInfo)) {
           for (const info of orderInfo) {
             if (!amount) {
-              // 优先匹配�?�?¥ 符号后跟含小数点金额（如 "�?9.90" "¥39.90"），过滤 ¥1�?¥1�?等整数干�?
+              // 优先匹配带 ￥/¥ 符号后跟含小数点金额（如 "￥39.90" "¥39.90"），过滤 ¥1折/¥1张 等整数干扰
               const currencyMatch = info.match(/[￥¥]([0-9]+\.[0-9]+)/)
               if (currencyMatch) {
                 amount = parseFloat(currencyMatch[1]) || 0
               }
             }
             if (!amount) {
-              // 其次匹配纯小数格式（�?"39.90"�?
+              // 其次匹配纯小数格式（如 "39.90"）
               const decimalMatch = info.match(/([0-9]+\.[0-9]+)/)
               if (decimalMatch) {
                 amount = parseFloat(decimalMatch[1]) || 0
@@ -527,7 +527,7 @@ function OrderListPage() {
             if (timeMatch) {
               payTime = timeMatch[1]
             }
-            // 金额和时间都已匹配到则提前退�?
+            // 金额和时间都已匹配到则提前退出
             if (amount && payTime) break
           }
         }
@@ -571,13 +571,13 @@ function OrderListPage() {
         return
       }
 
-      // ── 前端本地预去�?──────────────────────────────────────────
-      // �?DB 取所有已�?order_id 及状态，在本地比对，
-      // 只把"新增"�?状态变�?的订单发给后端，大幅减少传输量和后端压力
+      // ── 前端本地预去重 ──────────────────────────────────────────
+      // 从 DB 取所有已有 order_id 及状态，在本地比对，
+      // 只把"新增"和"状态变化"的订单发给后端，大幅减少传输量和后端压力
       setOrderSyncProgress({
         current: 0,
         total: formattedOrders.length,
-        message: `已抓�?${formattedOrders.length} 条，正在获取本地已有订单ID...`
+        message: `已抓取 ${formattedOrders.length} 条，正在获取本地已有订单ID...`
       })
 
       let existingMap = {}
@@ -585,7 +585,7 @@ function OrderListPage() {
         const existingRes = await ordersApi.getExistingIds(parseInt(selectedAccountId))
         existingMap = existingRes.data || {}
       } catch (e) {
-        // 获取失败时降级为全量发送（不影响正确性，只影响性能�?
+        // 获取失败时降级为全量发送（不影响正确性，只影响性能）
         console.warn('获取已有订单ID失败，降级为全量同步:', e)
       }
 
@@ -597,7 +597,7 @@ function OrderListPage() {
           // 已存在，直接跳过，不更新
           clientSkipCount++
         } else {
-          // 新订单，需要入�?
+          // 新订单，需要入库
           ordersToSend.push(order)
         }
       }
@@ -620,7 +620,7 @@ function OrderListPage() {
       setOrderSyncProgress({
         current: 0,
         total: ordersToSend.length,
-        message: `本地去重后剩�?${ordersToSend.length} 条（跳过 ${clientSkipCount} 条），开始落�?..`
+        message: `本地去重后剩余 ${ordersToSend.length} 条（跳过 ${clientSkipCount} 条），开始落库...`
       })
 
       let aggregatedNewCount = 0
@@ -637,7 +637,7 @@ function OrderListPage() {
         setOrderSyncProgress({
           current: start,
           total: ordersToSend.length,
-          message: `正在保存批次 ${batchNumber}/${totalBatches}�?{start + 1}-${start + batchOrders.length} / ${ordersToSend.length}�?..`
+          message: `正在保存批次 ${batchNumber}/${totalBatches}（${start + 1}-${start + batchOrders.length} / ${ordersToSend.length}）...`
         })
 
         const saveResponse = await ordersApi.saveBatch({
@@ -702,7 +702,7 @@ function OrderListPage() {
     setOrderSyncProgress({ current: 0, total: 0, message: '' })
   }
 
-  // 券码查询并落库（优化版：使用后端API一次性获取待查询订单�?
+  // 券码查询并落库（优化版：使用后端API一次性获取待查询订单）
   const handleQueryCoupons = async () => {
     if (!selectedAccountId) {
       toast.warning('Please select an account first')
@@ -712,6 +712,11 @@ function OrderListPage() {
     const account = accounts.find(a => a.id === parseInt(selectedAccountId))
     if (!account) {
       toast.error('Account not found')
+      return
+    }
+
+    if (!account.open_id || !account.open_id_cipher) {
+      toast.warning('This account is missing openId/openIdCipher. Please recapture and save it first.')
       return
     }
 
@@ -775,15 +780,15 @@ function OrderListPage() {
               userid: account.userid,
               token: account.token,
               csecuuid: account.csecuuid || '',
-              openId: account.open_id || '',
-              openIdCipher: account.open_id_cipher || '',
+              openId: account.open_id,
+              openIdCipher: account.open_id_cipher,
               platform: account.platform || 'android'
             },
             orderId: order.order_view_id
           }).then(async result => {
             if (result.success && result.data?.response) {
               const backendResponse = result.data.response
-              const coupons = backendResponse.data
+              const coupons = stripPlaceholderCoupons(backendResponse.data)
 
               if (Array.isArray(coupons) && coupons.length > 0) {
                 for (const couponInfo of coupons) {
@@ -888,10 +893,15 @@ function OrderListPage() {
   const queryCouponForOrder = async (order, options = {}) => {
     const { forceRefresh = false } = options
 
-    // 检查账号信�?
+    // 检查账号信息
     const account = accounts.find(a => a.id === parseInt(selectedAccountId))
     if (!account) {
-      toast.error('账号不存�?)
+      toast.error('账号不存在')
+      return
+    }
+
+    if (!account.open_id || !account.open_id_cipher) {
+      toast.warning('该账号缺少必要信息，请先在账号管理中重新抓取')
       return
     }
 
@@ -923,8 +933,8 @@ function OrderListPage() {
             userid: account.userid,
             token: account.token,
             csecuuid: account.csecuuid || '',
-            openId: account.open_id || '',
-            openIdCipher: account.open_id_cipher || '',
+            openId: account.open_id,
+            openIdCipher: account.open_id_cipher,
             platform: account.platform || 'android'
           },
           orderId: order.order_view_id
@@ -934,7 +944,9 @@ function OrderListPage() {
       }
 
       if (result.success && result.data?.response) {
-        const coupons = Array.isArray(result.data.response?.data) ? result.data.response.data : []
+        const coupons = stripPlaceholderCoupons(
+          Array.isArray(result.data.response?.data) ? result.data.response.data : []
+        )
         const queryResult = createSuccessQueryResult({
           source: 'frontend',
           coupons,
@@ -954,7 +966,7 @@ function OrderListPage() {
           fetchedAt: couponQueryCacheRef.current[cacheKey].fetchedAt
         })
 
-        // 自动落库：保存券码信息并更新查询状�?
+        // 自动落库：保存券码信息并更新查询状态
         if (coupons.length > 0) {
           (async () => {
             try {
@@ -1002,7 +1014,7 @@ function OrderListPage() {
     }
   }
 
-  // 查询单个订单的券�?
+  // 查询单个订单的券码
   const handleQuerySingleCoupon = async () => {
     if (!contextMenu.order) return
 
@@ -1025,13 +1037,13 @@ function OrderListPage() {
     }
 
     if (currentGiftReturnStatus?.status === 'pending') {
-      toast.info('这笔礼物订单正在处理中，请稍�?)
+      toast.info('这笔礼物订单正在处理中，请稍候')
       return
     }
 
     const confirmed = await confirm(
-      `确定要退还礼物订�?${giftId} 吗？此操作会向美团提交退还请求。`,
-      '退还礼物确�?
+      `确定要退还礼物订单 ${giftId} 吗？此操作会向美团提交退还请求。`,
+      '退还礼物确认'
     )
     if (!confirmed) {
       return
@@ -1044,7 +1056,7 @@ function OrderListPage() {
 
     const account = accounts.find(a => a.id === parseInt(selectedAccountId))
     if (!account) {
-      toast.error('账号不存�?)
+      toast.error('账号不存在')
       return
     }
 
@@ -1059,7 +1071,7 @@ function OrderListPage() {
     }
 
     try {
-      updateGiftReturnStatus(order, 'pending', '正在退还礼�?..')
+      updateGiftReturnStatus(order, 'pending', '正在退还礼物...')
       const result = await window.electronAPI.apiReturnGift({
         token: account.token,
         giftId,
@@ -1072,10 +1084,10 @@ function OrderListPage() {
       })
 
       if (result.success && result.data?.code === 0) {
-        const successMessage = result.data?.message || '礼物退还成�?
+        const successMessage = result.data?.message || '礼物退还成功'
         updateGiftReturnStatus(order, 'success', successMessage)
         await persistGiftReturnStatusSafely(order, 'success', successMessage)
-        toast.success('礼物退还成�?)
+        toast.success('礼物退还成功')
         await loadOrders(ordersPage, ordersPageSize, true)
       } else if (isGiftReturnRiskControl(result?.data, result?.error)) {
         const riskUrl = getGiftReturnRiskUrl(result?.data)
@@ -1084,9 +1096,9 @@ function OrderListPage() {
         await persistGiftReturnStatusSafely(order, 'risk', riskMessage)
         if (riskUrl) {
           window.open(riskUrl, '_blank')
-          toast.warning('触发风控，已打开验证页面，完成验证后请重�?)
+          toast.warning('触发风控，已打开验证页面，完成验证后请重试')
         } else {
-          toast.warning('退还礼物时触发风控，请完成验证或更�?Token 后重�?)
+          toast.warning('退还礼物时触发风控，请完成验证或更新 Token 后重试')
         }
       } else {
         const errorMessage = getGiftReturnErrorMessage(result?.data, result?.error)
@@ -1099,11 +1111,11 @@ function OrderListPage() {
       if (isGiftReturnRiskControl(null, errorMessage)) {
         updateGiftReturnStatus(order, 'risk', errorMessage)
         await persistGiftReturnStatusSafely(order, 'risk', errorMessage)
-        toast.warning('退还礼物时触发风控，请完成验证或更�?Token 后重�?)
+        toast.warning('退还礼物时触发风控，请完成验证或更新 Token 后重试')
       } else {
         updateGiftReturnStatus(order, 'error', errorMessage)
         await persistGiftReturnStatusSafely(order, 'error', errorMessage)
-        toast.error('退还失�? ' + errorMessage)
+        toast.error('退还失败: ' + errorMessage)
       }
     }
   }
@@ -1116,7 +1128,7 @@ function OrderListPage() {
   }, [])
 
   const handleExport = async () => {
-    const headers = ['订单�?, '标题', '分类', '状�?, '金额', '下单时间', '券码查询']
+    const headers = ['订单号', '标题', '分类', '状态', '金额', '下单时间', '券码查询']
     const rows = orders.map(order => [
       order.order_id,
       order.title || '',
@@ -1140,29 +1152,29 @@ function OrderListPage() {
 
   const getStatusText = (order) => {
     if (order.showstatus) return order.showstatus
-    if (order.order_status === 1 || order.tousestatus === 1) return '待消�?
+    if (order.order_status === 1 || order.tousestatus === 1) return '待消费'
     if (order.order_status === 0) return '其他'
     return '未知'
   }
 
   const getStatusColor = (order) => {
     const status = order.showstatus || ''
-    if (status.includes('待消�?) || status.includes('待使�?) || order.tousestatus === 1) {
+    if (status.includes('待消费') || status.includes('待使用') || order.tousestatus === 1) {
       return 'bg-blue-100 text-blue-800'
     }
-    if (status.includes('已完�?) || status.includes('待评�?)) {
+    if (status.includes('已完成') || status.includes('待评价')) {
       return 'bg-green-100 text-green-800'
     }
-    if (status.includes('退�?)) {
+    if (status.includes('退款')) {
       return 'bg-orange-100 text-orange-800'
     }
-    if (status.includes('礼物已使�?)) {
+    if (status.includes('礼物已使用')) {
       return 'bg-purple-100 text-purple-800'
     }
     return 'bg-gray-100 text-gray-800'
   }
 
-  // 券码查询状�?
+  // 券码查询状态
   const getQueryStatusColor = (status) => {
     switch (status) {
       case 1: return 'bg-green-100 text-green-800'
@@ -1175,7 +1187,7 @@ function OrderListPage() {
     switch (status) {
       case 1: return '成功'
       case 2: return '失败'
-      default: return '待查�?
+      default: return '待查询'
     }
   }
 
@@ -1200,17 +1212,17 @@ function OrderListPage() {
           </div>
 
           <div className="min-w-[150px]">
-            <label className="block text-xs text-gray-500 mb-1">订单状�?/label>
+            <label className="block text-xs text-gray-500 mb-1">订单状态</label>
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
               className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
             >
               <option value="0">全部订单</option>
-              <option value="2">待使�?/option>
-              <option value="3">已完�?/option>
-              <option value="4">退�?售后</option>
-              <option value="5">礼物已使�?/option>
+              <option value="2">待使用</option>
+              <option value="3">已完成</option>
+              <option value="4">退款/售后</option>
+              <option value="5">礼物已使用</option>
             </select>
           </div>
 
@@ -1228,12 +1240,12 @@ function OrderListPage() {
           </div>
 
           <div className="min-w-[200px]">
-            <label className="block text-xs text-gray-500 mb-1">订单号搜�?/label>
+            <label className="block text-xs text-gray-500 mb-1">订单号搜索</label>
             <input
               type="text"
               value={orderSearchKeyword}
               onChange={(e) => setOrderSearchKeyword(e.target.value)}
-              placeholder="订单�?/ 订单视图�?
+              placeholder="订单号 / 订单视图号"
               className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
             />
           </div>
@@ -1256,13 +1268,13 @@ function OrderListPage() {
               type="text"
               value={titleSearchKeyword}
               onChange={(e) => setTitleSearchKeyword(e.target.value)}
-              placeholder="标题关键�?
+              placeholder="标题关键词"
               className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
             />
           </div>
 
           <div className="min-w-[100px]">
-            <label className="block text-xs text-gray-500 mb-1">最大页�?/label>
+            <label className="block text-xs text-gray-500 mb-1">最大页数</label>
             <input
               type="number"
               value={maxPages}
@@ -1279,7 +1291,7 @@ function OrderListPage() {
             className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 flex items-center gap-2 disabled:opacity-50"
           >
             <Database className={`w-4 h-4 ${loading ? 'animate-pulse' : ''}`} />
-            {loading ? '拉取�?..' : '数据库拉�?}
+            {loading ? '拉取中...' : '数据库拉取'}
           </button>
 
           <button
@@ -1308,7 +1320,7 @@ function OrderListPage() {
           </button>
 
           <span className="text-sm text-gray-500 ml-auto">
-            {isExactOrderSearchMode ? `查单结果 ${orders.length} 条` : `�?${ordersTotal} 条订单`}
+            {isExactOrderSearchMode ? `查单结果 ${orders.length} 条` : `共 ${ordersTotal} 条订单`}
           </span>
         </div>
 
@@ -1350,14 +1362,14 @@ function OrderListPage() {
             <div className="flex flex-wrap items-center gap-3 justify-between">
               <div className="min-w-0">
                 <div className="text-sm font-medium text-gray-800">
-                  已定位订�?{singleExactOrder.order_id}
+                  已定位订单 {singleExactOrder.order_id}
                 </div>
                 <div className="text-xs text-gray-600 mt-1">
-                  {singleExactOrder.title || '无标�?} · {getStatusText(singleExactOrder)} · 券码状�?{getQueryStatusText(singleExactOrder.coupon_query_status)}
+                  {singleExactOrder.title || '无标题'} · {getStatusText(singleExactOrder)} · 券码状态 {getQueryStatusText(singleExactOrder.coupon_query_status)}
                 </div>
                 <div className="flex flex-wrap gap-2 mt-3 text-xs">
                   <span className="px-2 py-1 rounded-full bg-white text-gray-700 border border-orange-100">
-                    订单视图�?{singleExactOrder.order_view_id || '-'}
+                    订单视图号 {singleExactOrder.order_view_id || '-'}
                   </span>
                   <span className="px-2 py-1 rounded-full bg-white text-gray-700 border border-orange-100">
                     金额 {singleExactOrder.order_amount ?? '0'}
@@ -1377,7 +1389,7 @@ function OrderListPage() {
                   className="px-3 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-50 flex items-center gap-2"
                 >
                   <Search className={`w-4 h-4 ${couponQueryLoading ? 'animate-pulse' : ''}`} />
-                  {couponQueryLoading ? '查询�?..' : '快速查券码'}
+                  {couponQueryLoading ? '查询中...' : '快速查券码'}
                 </button>
                 <button
                   onClick={clearExactOrderSearch}
@@ -1394,14 +1406,14 @@ function OrderListPage() {
           <table className="w-full">
             <thead className="bg-gray-50 sticky top-0">
               <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">订单�?/th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">订单号</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">标题</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">分类</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">状�?/th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">状态</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">金额</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">下单时间</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">券码查询</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">礼物退�?/th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">礼物退还</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -1462,11 +1474,11 @@ function OrderListPage() {
                 <option value="100">100</option>
                 <option value="200">200</option>
               </select>
-              <span className="text-sm text-gray-500">�?/span>
+              <span className="text-sm text-gray-500">条</span>
             </div>
 
             <div className="text-sm text-gray-500">
-              显示 {(ordersPage - 1) * ordersPageSize + 1} - {Math.min(ordersPage * ordersPageSize, ordersTotal)} 条，�?{ordersTotal} �?
+              显示 {(ordersPage - 1) * ordersPageSize + 1} - {Math.min(ordersPage * ordersPageSize, ordersTotal)} 条，共 {ordersTotal} 条
             </div>
 
             <div className="flex items-center gap-2">
@@ -1534,7 +1546,7 @@ function OrderListPage() {
               className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
             >
               <Gift className="w-4 h-4" />
-              退还礼�?
+              退还礼物
             </button>
           )}
         </div>

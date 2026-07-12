@@ -9,6 +9,17 @@ const QUERY_SOURCE_LABELS = {
   backend: '后端查询'
 }
 
+/** 占位券码（需经纬度重试后仍失败时不应入库/展示） */
+export const isPlaceholderCouponCode = (code) =>
+  String(code || '').replace(/\s/g, '') === '000000000000'
+
+export const stripPlaceholderCoupons = (list) => {
+  if (!Array.isArray(list)) return []
+  return list.filter(
+    (c) => !isPlaceholderCouponCode(c?.coupon || c?.code || c?.coupon_code || c?.encode)
+  )
+}
+
 const buildBaseQueryResult = ({
   status,
   source,
@@ -39,7 +50,7 @@ export const createSuccessQueryResult = ({
     status: QUERY_RESULT_STATUS.SUCCESS,
     source,
     message,
-    coupons,
+    coupons: stripPlaceholderCoupons(coupons),
     saved,
     meta
   })
