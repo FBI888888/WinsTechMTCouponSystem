@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
+from sqlalchemy.orm.attributes import flag_modified
 import httpx
 from app.database import get_db
 from app.models.user import User
@@ -17,6 +18,13 @@ from app.deps import get_current_user
 from app.utils.encryption import encrypt_token, decrypt_token
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
+
+
+def _normalize_platform(value: Optional[str], fallback: str = "android") -> str:
+    key = str(value or "").strip().lower()
+    if key in {"android", "windows", "ios", "harmony"}:
+        return key
+    return fallback
 
 
 def _encrypt_account_token(token: str) -> str:
@@ -78,6 +86,7 @@ def create_account(
         csecuuid=account.csecuuid,
         open_id=account.open_id,
         open_id_cipher=account.open_id_cipher,
+        platform=_normalize_platform(account.platform, "android"),
         user_id=account.user_id or current_user.id if current_user.role == "admin" else current_user.id,
         status=AccountStatus.UNCHECKED
     )
@@ -125,9 +134,14 @@ def capture_account(
         existing.csecuuid = request.csecuuid or existing.csecuuid
         existing.open_id = request.open_id or existing.open_id
         existing.open_id_cipher = request.open_id_cipher or existing.open_id_cipher
+        # 平台字段：显式传入时始终更新并标记脏数据，确保写入数据库
+        if request.platform is not None and str(request.platform).strip():
+            existing.platform = _normalize_platform(request.platform, existing.platform or "android")
+            flag_modified(existing, "platform")
         if request.status:
             existing.status = parse_status(request.status)
             existing.last_check_time = datetime.now()
+        db.add(existing)
         db.commit()
         db.refresh(existing)
         # 返回时解密
@@ -135,6 +149,7 @@ def capture_account(
         return existing
 
     # Create new account
+    platform_value = _normalize_platform(request.platform, "android")
     db_account = MTAccount(
         remark=request.remark,
         userid=request.userid,
@@ -143,6 +158,7 @@ def capture_account(
         csecuuid=request.csecuuid,
         open_id=request.open_id,
         open_id_cipher=request.open_id_cipher,
+        platform=platform_value,
         status=parse_status(request.status) if request.status else AccountStatus.UNCHECKED
     )
     if request.status:
@@ -257,8 +273,13 @@ def update_account(
         # 如果是 token 字段，需要加密
         if field == "token" and value:
             value = _encrypt_account_token(value)
+        if field == "platform":
+            value = _normalize_platform(value, db_account.platform or "android")
         setattr(db_account, field, value)
+        if field == "platform":
+            flag_modified(db_account, "platform")
 
+    db.add(db_account)
     db.commit()
     db.refresh(db_account)
 

@@ -19,7 +19,8 @@ function main() {
     options: {
       userId: String(userid),
       openId: String(openId),
-      uuid: String(csecuuid || 'c34d9b03-7520-47e3-9d7c-17a3d930c48d'),
+      uuid: String(csecuuid || ''),
+      platform: 'android',
     },
   });
 

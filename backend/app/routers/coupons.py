@@ -168,7 +168,8 @@ async def _query_coupons_backend_grouped(
             options = {
                 "userId": account.userid or "",
                 "openId": account.open_id or "",
-                "uuid": account.csecuuid or "c34d9b03-7520-47e3-9d7c-17a3d930c48d",
+                "uuid": account.csecuuid or "",
+                "platform": account.platform or "android",
             }
             api_result = await call_meituan_api(decrypted_token, query_order_id, options)
         except Exception as exc:
@@ -583,6 +584,7 @@ def query_coupons(
             csecuuid=account.csecuuid,
             open_id=account.open_id,
             open_id_cipher=account.open_id_cipher,
+            platform=account.platform or "android",
             # 已有的券码状态
             coupon_status=coupon.coupon_status,
             status="found",

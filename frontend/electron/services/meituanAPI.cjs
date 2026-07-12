@@ -4,6 +4,11 @@
  */
 const axios = require('axios')
 const { sign: signRequest, reinit: reinitSigner } = require('./mtgsig_standalone.cjs')
+const {
+  DEFAULT_COOKIES,
+  DEFAULT_PLATFORM,
+  getPlatformConfig,
+} = require('./platformConfig.cjs')
 
 // 取消标志存储
 const cancelFlags = new Map()
@@ -28,28 +33,46 @@ function generateOperationId() {
   return Date.now().toString(36) + Math.random().toString(36).substr(2)
 }
 
-// Track signer reuse for Electron-side requests.
-let requestCount = 0
-const ROTATION_THRESHOLD = 50
+/**
+ * 获取签名后的 URL（与 mt-qrcode-web 对齐：默认每次 fresh 会话，防风控）
+ * @param {string|object} methodOrOpts - HTTP 方法，或完整选项对象 {method, url, body, cookies?}
+ * @param {string} [url] - 原始URL
+ * @param {object|string} [body] - 请求数据
+ * @param {object|string} [cookies] - Cookie（不传使用 DEFAULT_COOKIES）
+ */
+function getSignedUrl(methodOrOpts, url, body, cookies) {
+  let opts
+  if (typeof methodOrOpts === 'object') {
+    opts = methodOrOpts
+  } else {
+    opts = { method: methodOrOpts, url, body, cookies: cookies || DEFAULT_COOKIES }
+  }
+  if (!opts.cookies) opts.cookies = DEFAULT_COOKIES
+  // 不强制 fresh/maxReuse：mtgsig_core 默认 fresh=true（每次新建会话）
 
-function getSignedUrl(url, data, method = 'POST') {
   try {
-    const { signedUrl } = signRequest({
-      method,
-      url,
-      body: data,
-      fresh: false,
-      maxReuse: ROTATION_THRESHOLD,
-    })
-    requestCount += 1
-    return signedUrl || url
+    const { signedUrl } = signRequest(opts)
+    return signedUrl || opts.url
   } catch (e) {
     console.error('Sign failed:', e.message)
     try {
       reinitSigner()
     } catch (_) {}
-    return url
+    return opts.url
   }
+}
+
+function isWindControlResponse(data) {
+  if (!data) return false
+  return data.code === 403
+    || (typeof data.msg === 'string' && data.msg.includes('风控'))
+    || (typeof data.message === 'string' && data.message.includes('风控'))
+}
+
+function reinitOnWindControl() {
+  try {
+    reinitSigner()
+  } catch (_) {}
 }
 
 function isProbablyGiftIdEncrypt(value) {
@@ -164,7 +187,8 @@ class MeituanAPI {
     const latitude = options.latitude || options.lat || '41.748709'
     const longitude = options.longitude || options.lng || '86.159215'
     const cityId = String(options.cityId || '603')
-    const userAgent = options.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090a13) UnifiedPCWindowsWechat(0xf254181d) XWEB/19201 miniProgram/wxde8ac0a21135c07d'
+    const cfg = getPlatformConfig(options.platform)
+    const userAgent = options.userAgent || cfg.userAgent
     const baseUrl = `https://apimobile.meituan.com/foodtrade/gift/receive/preview?duo_csdk_v=1&page_protocol_version=0001&pre_trace_id=&token=${token}&yodaReady=h5&csecplatform=4&csecversion=4.2.0`
     const commonParams = {
       location: {
@@ -186,7 +210,7 @@ class MeituanAPI {
         version: '',
         systemVersion: '',
         device: '',
-        platform: 'android',
+        platform: cfg.systemPlatform,
         IS_MT: true,
         IS_DP: false,
         IS_TICKET: false,
@@ -255,8 +279,7 @@ class MeituanAPI {
       minifyHttpResponse: '1'
     }
 
-    const payloadStr = JSON.stringify(payload)
-    const signedUrl = getSignedUrl(baseUrl, payloadStr, 'POST')
+    const signedUrl = getSignedUrl({ method: 'POST', url: baseUrl, body: payload, cookies: DEFAULT_COOKIES })
     const response = await axios.post(signedUrl, payload, { headers, timeout: 15000 })
     printApiFullResponse('礼物ID解析 receive preview', response)
     const giftId = extractGiftIdFromGiftReceiveResponse(response.data)
@@ -466,6 +489,9 @@ class MeituanAPI {
     // 确保 orderid 是字符串
     const orderIdStr = String(orderid)
     const { longitude, latitude, userId, openId, uuid } = options
+    const platform = options.platform || DEFAULT_PLATFORM
+    if (!options.platform) options.platform = platform
+    const cfg = getPlatformConfig(platform)
     const giftIdEncrypt = firstNonEmpty(
       options.giftIdEncrypt,
       options.gift_id_encrypt,
@@ -476,10 +502,19 @@ class MeituanAPI {
     // 判断是否为礼物订单（字符串订单号，通常以字母开头或长度超过15位的纯字母数字）
     const isGift = Boolean(resolvedGiftId) || isPlainGiftId(orderIdStr)
 
-    console.log('getCouponListByOrderId - orderid:', orderIdStr, '是否礼物订单:', isGift, '经度:', longitude, '纬度:', latitude, 'userId:', userId, 'openId:', openId)
+    console.log(
+      'getCouponListByOrderId - orderid:', orderIdStr,
+      '是否礼物订单:', isGift,
+      '平台:', platform,
+      'UA:', (cfg.userAgent || '').substring(0, 60) + '...',
+      '经度:', longitude,
+      '纬度:', latitude,
+      'userId:', userId,
+      'openId:', openId
+    )
 
     if (isGift || giftIdEncrypt) {
-      return await this.getGiftCouponList(token, resolvedGiftId || orderIdStr, { ...options, longitude, latitude, userId, openId, uuid, giftIdEncrypt })
+      return await this.getGiftCouponList(token, resolvedGiftId || orderIdStr, { ...options, longitude, latitude, userId, openId, uuid, giftIdEncrypt, platform })
     }
 
     const baseUrl = `https://apimobile.meituan.com/foodtrade/order/api/detail/preview?duo_csdk_v=1&page_protocol_version=0001&pre_trace_id=&token=${token}&yodaReady=h5&csecplatform=4&csecversion=4.0.2`
@@ -510,8 +545,8 @@ class MeituanAPI {
         utmMedium: "WEIXINPROGRAM",
         appVersion: "9.27.2",
         envPlatform: "wx",
-        platform: "ANDROID",
-        uniPlatform: "android",
+        platform: cfg.platform,
+        uniPlatform: cfg.uniPlatform,
         utmTerm: "0",
         utmCampaign: "0",
         app_version: "9.27.2",
@@ -527,7 +562,7 @@ class MeituanAPI {
           version: "",
           systemVersion: "",
           device: "",
-          platform: "android",
+          platform: cfg.systemPlatform,
           IS_MT: true,
           IS_DP: false,
           IS_TICKET: false,
@@ -553,7 +588,7 @@ class MeituanAPI {
             isWebInHarmonyMSCMiniProgram: false
           },
           isDebug: false,
-          userAgent: ''
+          userAgent: cfg.userAgent
         },
         storage: { deliveryAddrCacheJson: "" },
         isPreview: true,
@@ -573,7 +608,7 @@ class MeituanAPI {
       'Host': 'apimobile.meituan.com',
       'Connection': 'keep-alive',
       'Accept': 'application/json, text/plain, */*',
-      'User-Agent': '',
+      'User-Agent': cfg.userAgent,
       'Origin': 'https://awp.meituan.com',
       'Sec-Fetch-Site': 'same-site',
       'Sec-Fetch-Mode': 'cors',
@@ -588,10 +623,9 @@ class MeituanAPI {
 
     for (let retry = 0; retry < maxRetries; retry++) {
       try {
-        const payloadStr = JSON.stringify(payload)
-        const signedUrl = getSignedUrl(baseUrl, payloadStr, 'POST')
+        const signedUrl = getSignedUrl({ method: 'POST', url: baseUrl, body: payload, cookies: DEFAULT_COOKIES })
 
-        console.log(`获取券码 - 订单ID: ${orderIdStr}, 尝试次数: ${retry + 1}/${maxRetries}`)
+        console.log(`获取券码 - 订单ID: ${orderIdStr}, 平台: ${platform}, 尝试次数: ${retry + 1}/${maxRetries}`)
         console.log('获取券码 - 签名URL:', signedUrl.substring(0, 200) + '...')
 
         const response = await axios.post(signedUrl, payload, { headers, timeout: 15000 })
@@ -607,9 +641,10 @@ class MeituanAPI {
         console.log('获取券码 - 完整响应数据:', JSON.stringify(response.data).substring(0, 2000))
 
         // 检查是否有风控错误
-        if (response.data?.code === 403 || response.data?.msg?.includes('风控') || response.data?.message?.includes('风控')) {
+        if (isWindControlResponse(response.data)) {
           console.log('获取券码 - 检测到风控，准备重试...')
           lastError = new Error('WIND_CONTROL')
+          reinitOnWindControl()
           if (retry < maxRetries - 1) {
             await new Promise(r => setTimeout(r, 1000 * (retry + 1)))
             continue
@@ -634,8 +669,7 @@ class MeituanAPI {
             const retryPayload = JSON.parse(JSON.stringify(payload))
             applyLocationToPayload(retryPayload, extractedShopLocation.lat, extractedShopLocation.lng)
 
-            const retryPayloadStr = JSON.stringify(retryPayload)
-            const retrySignedUrl = getSignedUrl(baseUrl, retryPayloadStr, 'POST')
+            const retrySignedUrl = getSignedUrl({ method: 'POST', url: baseUrl, body: retryPayload, cookies: DEFAULT_COOKIES })
             const retryResponse = await axios.post(retrySignedUrl, retryPayload, { headers, timeout: 15000 })
             printApiFullResponse('获取券码 detail preview 店铺位置重试', retryResponse)
             const retryCoupons = this.parseCouponResponse(retryResponse.data)
@@ -645,9 +679,30 @@ class MeituanAPI {
               console.log('[券码查询] 使用店铺位置重新查询成功，获取到有效券码')
               return { coupons: retryCoupons, shopLocation: extractedShopLocation }
             }
-            console.log('[券码查询] 使用店铺位置重新查询仍为占位券码，返回原始结果')
+
+            // 坐标微调二次重查（对齐 mt-qrcode-web）
+            const lngNum = parseFloat(extractedShopLocation.lng)
+            const latNum = parseFloat(extractedShopLocation.lat)
+            if (Number.isFinite(lngNum) && Number.isFinite(latNum)) {
+              const tweakedLongitude = (lngNum + 0.00001).toFixed(6)
+              const tweakedLatitude = (latNum + 0.00001).toFixed(6)
+              console.log(`[券码查询] 店铺位置重查仍为占位，坐标微调重查: lat=${tweakedLatitude}, lng=${tweakedLongitude}`)
+              await new Promise(r => setTimeout(r, 200))
+              applyLocationToPayload(retryPayload, tweakedLatitude, tweakedLongitude)
+              const tweakSignedUrl = getSignedUrl({ method: 'POST', url: baseUrl, body: retryPayload, cookies: DEFAULT_COOKIES })
+              const tweakResponse = await axios.post(tweakSignedUrl, retryPayload, { headers, timeout: 15000 })
+              printApiFullResponse('获取券码 detail preview 坐标微调重试', tweakResponse)
+              const tweakCoupons = this.parseCouponResponse(tweakResponse.data)
+              if (tweakCoupons.length > 0 && !this.isAllPlaceholderCoupons(tweakCoupons)) {
+                console.log('[券码查询] 坐标微调重查成功，获取到有效券码')
+                return { coupons: tweakCoupons, shopLocation: extractedShopLocation }
+              }
+            }
+            console.log('[券码查询] 店铺位置/坐标微调重查仍为占位券码，不返回占位码')
+            return { coupons: [], shopLocation: extractedShopLocation }
           } else {
             console.log('[券码查询] 未能从响应中提取到店铺位置信息')
+            return { coupons: [], shopLocation: extractedShopLocation }
           }
         }
 
@@ -655,6 +710,7 @@ class MeituanAPI {
         if (result.length === 0 && retry < maxRetries - 1) {
           console.log('获取券码 - 无券码信息，准备重试...')
           lastError = new Error('NO_COUPON_DATA')
+          reinitOnWindControl()
           await new Promise(r => setTimeout(r, 1000 * (retry + 1)))
           continue
         }
@@ -669,6 +725,7 @@ class MeituanAPI {
         // 如果是403错误，标记为风控
         if (error.response?.status === 403) {
           lastError = new Error('WIND_CONTROL_403')
+          reinitOnWindControl()
         }
 
         if (retry < maxRetries - 1) {
@@ -720,6 +777,14 @@ class MeituanAPI {
     // 生成随机指纹
     const finger = options.finger || `${Math.random().toString(36).substring(2, 15)}`
     const uuidValue = uuid || `19d38fdf436c8-35cea366b6a598-0-0-${Date.now()}`
+    const platform = options.platform || DEFAULT_PLATFORM
+    if (!options.platform) options.platform = platform
+    const cfg = getPlatformConfig(platform)
+    console.log(
+      'getGiftCouponList - giftId:', giftIdInput,
+      '平台:', platform,
+      'UA:', (cfg.userAgent || '').substring(0, 60) + '...'
+    )
 
     const payload = {
       pageQuery: {
@@ -740,8 +805,8 @@ class MeituanAPI {
         utmMedium: "WEIXINPROGRAM",
         appVersion: "10.12.1",
         envPlatform: "wx",
-        platform: "ANDROID",
-        uniPlatform: "windows",
+        platform: cfg.platform,
+        uniPlatform: cfg.uniPlatform,
         utmTerm: "0",
         utmCampaign: "0",
         app_version: "10.12.1",
@@ -768,7 +833,7 @@ class MeituanAPI {
           version: "",
           systemVersion: "",
           device: "",
-          platform: "android",
+          platform: cfg.systemPlatform,
           IS_MT: true,
           IS_DP: false,
           IS_TICKET: false,
@@ -795,7 +860,7 @@ class MeituanAPI {
             isWebInHarmonyMSCMiniProgram: false
           },
           isDebug: false,
-          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090a13) UnifiedPCWindowsWechat(0xf254181d) XWEB/19201 miniProgram/wxde8ac0a21135c07d'
+          userAgent: cfg.userAgent
         },
         storage: {},
         isPreview: true,
@@ -817,7 +882,7 @@ class MeituanAPI {
       'Host': 'apimobile.meituan.com',
       'Connection': 'keep-alive',
       'Accept': 'application/json, text/plain, */*',
-      'User-Agent': '',
+      'User-Agent': cfg.userAgent,
       'Origin': 'https://awp.meituan.com',
       'Sec-Fetch-Site': 'same-site',
       'Sec-Fetch-Mode': 'cors',
@@ -849,19 +914,19 @@ class MeituanAPI {
 
     for (let retry = 0; retry < maxRetries; retry++) {
       try {
-        const payloadStr = JSON.stringify(payload)
-        const signedUrl = getSignedUrl(baseUrl, payloadStr, 'POST')
+        const signedUrl = getSignedUrl({ method: 'POST', url: baseUrl, body: payload, cookies: DEFAULT_COOKIES })
 
-        console.log(`获取礼物券码 - giftId: ${giftId}, 尝试次数: ${retry + 1}/${maxRetries}`)
+        console.log(`获取礼物券码 - giftId: ${giftId}, 平台: ${platform}, 尝试次数: ${retry + 1}/${maxRetries}`)
 
         const response = await axios.post(signedUrl, payload, { headers, timeout: 15000 })
         console.log('获取礼物券码 - 响应状态:', response.status)
         printApiFullResponse('获取礼物券码 detail preview', response)
 
         // 检查是否有风控错误
-        if (response.data?.code === 403 || response.data?.msg?.includes('风控') || response.data?.message?.includes('风控')) {
+        if (isWindControlResponse(response.data)) {
           console.log('获取礼物券码 - 检测到风控，准备重试...')
           lastError = new Error('WIND_CONTROL')
+          reinitOnWindControl()
           if (retry < maxRetries - 1) {
             await new Promise(r => setTimeout(r, 1000 * (retry + 1)))
             continue
@@ -886,8 +951,7 @@ class MeituanAPI {
             const retryPayload = JSON.parse(JSON.stringify(payload))
             applyLocationToPayload(retryPayload, extractedShopLocation.lat, extractedShopLocation.lng)
 
-            const retryPayloadStr = JSON.stringify(retryPayload)
-            const retrySignedUrl = getSignedUrl(baseUrl, retryPayloadStr, 'POST')
+            const retrySignedUrl = getSignedUrl({ method: 'POST', url: baseUrl, body: retryPayload, cookies: DEFAULT_COOKIES })
             const retryResponse = await axios.post(retrySignedUrl, retryPayload, { headers, timeout: 15000 })
             printApiFullResponse('获取礼物券码 detail preview 店铺位置重试', retryResponse)
             const retryCoupons = this.parseGiftCouponResponse(retryResponse.data, resolvedGiftId || retryPayload.pageQuery.giftId || '')
@@ -1263,7 +1327,7 @@ class MeituanAPI {
       const url = `https://apimobile.meituan.com/group/v2/deal/${sku}/branches?token=${currentToken}&preCityId=1&offset=${currentOffset}&limit=${limit}&platform=mtapp&os=android&dpId=&chooseCity=0&chooseAllCity=0&bundle_version=1.23.0&source=order&yodaReady=h5&csecplatform=4&csecversion=4.0.3`
 
       const params = this.extractUrlParams(url)
-      const signedUrl = getSignedUrl(url, params, 'GET')
+      const signedUrl = getSignedUrl({ method: 'GET', url, body: params, cookies: DEFAULT_COOKIES })
 
       try {
         const response = await axios.get(signedUrl, {
@@ -1289,7 +1353,7 @@ class MeituanAPI {
 
             const retryUrl = `https://apimobile.meituan.com/group/v2/deal/${sku}/branches?token=${tokenPrefix}&preCityId=1&offset=${currentOffset}&limit=${limit}&platform=mtapp&os=android&dpId=&chooseCity=0&chooseAllCity=0&bundle_version=1.23.0&source=order&yodaReady=h5&csecplatform=4&csecversion=4.0.3`
             const retryParams = this.extractUrlParams(retryUrl)
-            const retrySignedUrl = getSignedUrl(retryUrl, retryParams, 'GET')
+            const retrySignedUrl = getSignedUrl({ method: 'GET', url: retryUrl, body: retryParams, cookies: DEFAULT_COOKIES })
 
             try {
               const retryResponse = await axios.get(retrySignedUrl, {
@@ -1455,6 +1519,8 @@ class MeituanAPI {
    */
   static async returnGift(token, giftId, options = {}) {
     const baseUrl = `https://apimobile.meituan.com/foodtrade/order/api/secondary/detail/gift/return?giftId=${giftId}&yodaReady=h5&csecplatform=4&csecversion=4.2.0`
+    const cfg = getPlatformConfig(options.platform)
+    const userAgent = options.userAgent || cfg.userAgent
 
     const payload = {
       commonParams: {
@@ -1482,7 +1548,7 @@ class MeituanAPI {
           version: "",
           systemVersion: "",
           device: "",
-          platform: "android",
+          platform: cfg.systemPlatform,
           IS_MT: true,
           IS_DP: false,
           IS_TICKET: false,
@@ -1509,7 +1575,7 @@ class MeituanAPI {
             isWebInHarmonyMSCMiniProgram: false
           },
           isDebug: false,
-          userAgent: options.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090a13) UnifiedPCWindowsWechat(0xf2541211) XWEB/18787 miniProgram/wxde8ac0a21135c07d'
+          userAgent
         },
         storage: {}
       }
@@ -1525,15 +1591,14 @@ class MeituanAPI {
       'Sec-Fetch-Dest': 'empty',
       'Sec-Fetch-Mode': 'cors',
       'Sec-Fetch-Site': 'same-site',
-      'User-Agent': options.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090a13) UnifiedPCWindowsWechat(0xf2541211) XWEB/18787 miniProgram/wxde8ac0a21135c07d',
+      'User-Agent': userAgent,
       'Host': 'apimobile.meituan.com'
     }
 
     try {
-      const payloadStr = JSON.stringify(payload)
-      const signedUrl = getSignedUrl(baseUrl, payloadStr, 'POST')
+      const signedUrl = getSignedUrl({ method: 'POST', url: baseUrl, body: payload, cookies: DEFAULT_COOKIES })
 
-      console.log(`退还礼物请求 - giftId: ${giftId}`)
+      console.log(`退还礼物请求 - giftId: ${giftId}, 平台: ${options.platform || DEFAULT_PLATFORM}`)
       const response = await axios.post(signedUrl, payload, { headers, timeout: 15000 })
       console.log('退还礼物响应:', JSON.stringify(response.data))
       return response.data

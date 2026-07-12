@@ -551,7 +551,8 @@ class ScheduledTaskService:
             options["userId"] = account.userid or ""
             options["openId"] = account.open_id or ""
             options["unionId"] = ""
-            options["uuid"] = account.csecuuid or "c34d9b03-7520-47e3-9d7c-17a3d930c48d"
+            options["uuid"] = account.csecuuid or ""
+            options["platform"] = account.platform or "android"
 
         try:
             result = await self._call_node_worker(

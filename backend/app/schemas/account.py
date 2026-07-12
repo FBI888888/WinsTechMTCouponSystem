@@ -11,6 +11,7 @@ class AccountBase(BaseModel):
     csecuuid: Optional[str] = None
     open_id: Optional[str] = None
     open_id_cipher: Optional[str] = None
+    platform: Optional[str] = "windows"
 
 
 class AccountCreate(AccountBase):
@@ -25,6 +26,7 @@ class AccountUpdate(BaseModel):
     csecuuid: Optional[str] = None
     open_id: Optional[str] = None
     open_id_cipher: Optional[str] = None
+    platform: Optional[str] = None
     status: Optional[str] = None
     disabled: Optional[int] = None
 
@@ -32,6 +34,7 @@ class AccountUpdate(BaseModel):
 class AccountResponse(AccountBase):
     id: int
     user_id: Optional[int]
+    platform: str = "windows"
     status: str
     disabled: int = 0
     last_check_time: Optional[datetime]
@@ -53,6 +56,7 @@ class AccountCaptureRequest(BaseModel):
     csecuuid: Optional[str] = None
     open_id: Optional[str] = None
     open_id_cipher: Optional[str] = None
+    platform: Optional[str] = "windows"
 
 
 class AccountCheckRequest(BaseModel):

@@ -92,7 +92,7 @@ class SignatureService:
             "url": kwargs.get("url") or url,
             "body": kwargs["body"] if "body" in kwargs else payload,
             "cookies": kwargs.get("cookies"),
-            "fresh": kwargs.get("fresh", False),
+            "fresh": kwargs.get("fresh", True),
             "maxReuse": kwargs.get("maxReuse", 100),
         }
 

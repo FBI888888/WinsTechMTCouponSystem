@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS `mt_accounts` (
     `csecuuid` VARCHAR(100) DEFAULT NULL COMMENT '抓包获取',
     `open_id` VARCHAR(100) DEFAULT NULL COMMENT 'openId',
     `open_id_cipher` VARCHAR(255) DEFAULT NULL COMMENT 'openIdCipher',
+    `platform` VARCHAR(20) NOT NULL DEFAULT 'windows' COMMENT '设备平台: android/windows/ios/harmony',
     `status` ENUM('normal', 'invalid', 'unchecked') NOT NULL DEFAULT 'unchecked' COMMENT '账号状态',
     `disabled` INT NOT NULL DEFAULT 0 COMMENT '是否禁用: 0=启用, 1=禁用',
     `last_check_time` DATETIME DEFAULT NULL COMMENT '最后检测时间',

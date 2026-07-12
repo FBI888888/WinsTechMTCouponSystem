@@ -23,6 +23,7 @@ class MTAccount(Base):
     csecuuid = Column(String(100))
     open_id = Column(String(100))
     open_id_cipher = Column(String(255))
+    platform = Column(String(20), nullable=False, default="windows")  # android/windows/ios/harmony
     status = Column(Enum(AccountStatus, values_callable=lambda obj: [e.value for e in obj]), default=AccountStatus.UNCHECKED, index=True)
     disabled = Column(Integer, default=0, index=True)  # 0=启用, 1=禁用
     last_check_time = Column(DateTime)

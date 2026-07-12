@@ -89,7 +89,7 @@ function GiftReturnPage() {
       payload?.errorMsg ||
       fallbackMessage
 
-    return message || '退还失败'
+    return message || '退还失�?
   }
 
   const setResultForGift = (giftId, patch) => {
@@ -117,7 +117,7 @@ function GiftReturnPage() {
     }
 
     if (!giftIds.length) {
-      toast.warning('请输入礼物单号')
+      toast.warning('请输入礼物单�?)
       return false
     }
 
@@ -139,7 +139,7 @@ function GiftReturnPage() {
     setResults(giftIds.map(giftId => ({
       giftId,
       status: 'waiting',
-      message: '等待退还',
+      message: '等待退�?,
       updatedAt: Date.now()
     })))
 
@@ -155,7 +155,7 @@ function GiftReturnPage() {
           skippedCount += remainingGiftIds.length
           setResults(previous => previous.map(item => (
             remainingGiftIds.includes(item.giftId) && ['waiting', 'pending'].includes(item.status)
-              ? { ...item, status: 'skipped', message: '已停止，未执行', updatedAt: Date.now() }
+              ? { ...item, status: 'skipped', message: '已停止，未执�?, updatedAt: Date.now() }
               : item
           )))
           break
@@ -163,7 +163,7 @@ function GiftReturnPage() {
 
         const giftId = giftIds[index]
         setProgress({ current: index + 1, total: giftIds.length })
-        setResultForGift(giftId, { status: 'pending', message: '正在退还...' })
+        setResultForGift(giftId, { status: 'pending', message: '正在退�?..' })
 
         try {
           const result = await window.electronAPI.apiReturnGift({
@@ -172,12 +172,13 @@ function GiftReturnPage() {
             options: {
               userId: selectedAccount.userid,
               uuid: selectedAccount.csecuuid || '',
-              openId: selectedAccount.open_id || ''
+              openId: selectedAccount.open_id || '',
+              platform: selectedAccount.platform || 'android'
             }
           })
 
           if (result.success && result.data?.code === 0) {
-            const message = result.data?.message || result.data?.msg || '礼物退还成功'
+            const message = result.data?.message || result.data?.msg || '礼物退还成�?
             successCount += 1
             setResultForGift(giftId, { status: 'success', message, raw: result.data })
           } else if (isGiftReturnRiskControl(result?.data, result?.error)) {
@@ -200,7 +201,7 @@ function GiftReturnPage() {
             setResultForGift(giftId, { status: 'risk', message })
           } else {
             failCount += 1
-            setResultForGift(giftId, { status: 'error', message: '退还失败: ' + message })
+            setResultForGift(giftId, { status: 'error', message: '退还失�? ' + message })
           }
         }
 
@@ -210,9 +211,9 @@ function GiftReturnPage() {
       }
 
       if (stopRequestedRef.current || currentRunId !== runIdRef.current) {
-        toast.warning(`已停止: 成功 ${successCount}，失败 ${failCount}，风控 ${riskCount}，跳过 ${skippedCount}`)
+        toast.warning(`已停�? 成功 ${successCount}，失�?${failCount}，风�?${riskCount}，跳�?${skippedCount}`)
       } else {
-        toast.success(`批量退还完成: 成功 ${successCount}，失败 ${failCount}，风控 ${riskCount}`)
+        toast.success(`批量退还完�? 成功 ${successCount}，失�?${failCount}，风�?${riskCount}`)
       }
     } finally {
       if (currentRunId === runIdRef.current) {
@@ -244,7 +245,7 @@ function GiftReturnPage() {
       case 'risk':
         return { text: '风控', className: 'bg-amber-100 text-amber-800', icon: ShieldAlert }
       case 'pending':
-        return { text: '处理中', className: 'bg-blue-100 text-blue-800', icon: RefreshCw }
+        return { text: '处理�?, className: 'bg-blue-100 text-blue-800', icon: RefreshCw }
       case 'skipped':
         return { text: '跳过', className: 'bg-gray-100 text-gray-700', icon: Square }
       default:
@@ -293,7 +294,7 @@ function GiftReturnPage() {
               </>
             ) : (
               <>
-                <Play className="w-4 h-4" /> 一键退还礼物
+                <Play className="w-4 h-4" /> 一键退还礼�?
               </>
             )}
           </button>
@@ -319,8 +320,8 @@ function GiftReturnPage() {
             className="w-full h-32 px-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none font-mono text-sm disabled:bg-gray-50"
           />
           <div className="mt-2 flex items-center justify-between gap-3 text-xs text-gray-500">
-            <span>已识别 {giftIds.length} 个礼物单号，重复单号会自动去重。</span>
-            <span>批量退还间隔：{RETURN_INTERVAL_MS / 1000}s / 单</span>
+            <span>已识�?{giftIds.length} 个礼物单号，重复单号会自动去重�?/span>
+            <span>批量退还间隔：{RETURN_INTERVAL_MS / 1000}s / �?/span>
           </div>
         </div>
       </div>
@@ -332,7 +333,7 @@ function GiftReturnPage() {
             <span className="px-2 py-1 rounded-full bg-green-50 text-green-700">成功 {summary.success}</span>
             <span className="px-2 py-1 rounded-full bg-red-50 text-red-700">失败 {summary.error}</span>
             <span className="px-2 py-1 rounded-full bg-amber-50 text-amber-700">风控 {summary.risk}</span>
-            <span className="px-2 py-1 rounded-full bg-blue-50 text-blue-700">处理中 {summary.pending}</span>
+            <span className="px-2 py-1 rounded-full bg-blue-50 text-blue-700">处理�?{summary.pending}</span>
             <span className="px-2 py-1 rounded-full bg-gray-100 text-gray-600">跳过 {summary.skipped}</span>
           </div>
           {running && (
@@ -350,7 +351,7 @@ function GiftReturnPage() {
               <thead className="bg-gray-50 sticky top-0">
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">礼物单号</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">状态</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">状�?/th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">返回信息</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">更新时间</th>
                 </tr>
@@ -393,10 +394,10 @@ function GiftReturnPage() {
             <div className="w-14 h-14 rounded-2xl bg-orange-50 flex items-center justify-center">
               <Gift className="w-7 h-7 text-orange-500" />
             </div>
-            <div className="text-sm">请输入礼物单号并点击“一键退还礼物”</div>
+            <div className="text-sm">请输入礼物单号并点击“一键退还礼物�?/div>
             <div className="flex items-center gap-2 text-xs text-gray-400">
               <AlertCircle className="w-3 h-3" />
-              退还请求在前端客户端中逐个执行，每个礼物单号间隔 1 秒。
+              退还请求在前端客户端中逐个执行，每个礼物单号间�?1 秒�?
             </div>
           </div>
         )}

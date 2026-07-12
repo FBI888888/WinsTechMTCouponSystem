@@ -95,12 +95,12 @@ function CouponQueryPage() {
     try {
       const account = await findAccountForResult(result)
 
-      if (!account?.userid || !account?.token || !account?.open_id || !account?.open_id_cipher) {
-        toast.warning('当前账号缺少必要信息(openId)，请先在账号管理中重新抓取')
+      if (!account?.userid || !account?.token) {
+        toast.warning('当前账号缺少必要信息(userid/token)，请先在账号管理中完善')
         if (requestId === couponDialogRequestIdRef.current) {
           setCouponDialogResult(createErrorQueryResult({
             source: 'frontend',
-            message: '当前账号缺少必要信息(openId)，无法查询券码'
+            message: '当前账号缺少必要信息(userid/token)，无法查询券码'
           }))
         }
         return
@@ -110,9 +110,10 @@ function CouponQueryPage() {
         account: {
           userid: account.userid,
           token: account.token,
-          csecuuid: account.csecuuid || 'c34d9b03-7520-47e3-9d7c-17a3d930c48d',
-          openId: account.open_id,
-          openIdCipher: account.open_id_cipher
+          csecuuid: account.csecuuid || '',
+          openId: account.open_id || '',
+          openIdCipher: account.open_id_cipher || '',
+          platform: account.platform || 'android'
         },
         orderId: queryOrderId,
         isGiftId
@@ -288,9 +289,10 @@ function CouponQueryPage() {
             account: {
               userid: item.userid,
               token: item.token,
-              csecuuid: item.csecuuid || 'c34d9b03-7520-47e3-9d7c-17a3d930c48d',
-              openId: item.open_id,
-              openIdCipher: item.open_id_cipher
+              csecuuid: item.csecuuid || '',
+              openId: item.open_id || '',
+              openIdCipher: item.open_id_cipher || '',
+              platform: item.platform || 'android'
             },
             orderId: queryOrderId,
             isGiftId: isGiftId

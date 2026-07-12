@@ -8,6 +8,12 @@ const http = require('http')
 const https = require('https')
 const readline = require('readline')
 const { sign: signRequest, reinit: reinitSigner } = require('./mtgsig_standalone')
+const {
+  DEFAULT_COOKIES,
+  DEFAULT_PLATFORM,
+  getPlatformConfig,
+  serializeCookies,
+} = require('./platformConfig.cjs')
 
 const BACKEND_API_DEBUG = process.env.MEITUAN_BACKEND_DEBUG === '1'
 
@@ -23,24 +29,78 @@ const axiosClient = axios.create({
   httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 10 })
 })
 
-// Backend-local mtgsig standalone signer
-function getSignedUrl(url, data, method = 'POST') {
+/**
+ * 获取签名后的 URL（与 mt-qrcode-web 对齐：默认每次 fresh 会话，防风控）
+ */
+function getSignedUrl(methodOrOpts, url, body, cookies) {
+  let opts
+  if (typeof methodOrOpts === 'object') {
+    opts = methodOrOpts
+  } else {
+    opts = { method: methodOrOpts, url, body, cookies: cookies || DEFAULT_COOKIES }
+  }
+  if (!opts.cookies) opts.cookies = DEFAULT_COOKIES
+  // 不强制 fresh/maxReuse：mtgsig_core 默认 fresh=true（每次新建会话）
+
   try {
-    const { signedUrl } = signRequest({
-      method,
-      url,
-      body: data,
-      fresh: false,
-      maxReuse: 100,
-    })
-    return signedUrl || url
+    const { signedUrl } = signRequest(opts)
+    return signedUrl || opts.url
   } catch (e) {
     console.error('Sign failed:', e.message)
     try {
       reinitSigner()
     } catch (_) {}
-    return url
+    return opts.url
   }
+}
+
+function isWindControlResponse(data) {
+  if (!data) return false
+  return data.code === 403
+    || (typeof data.msg === 'string' && data.msg.includes('风控'))
+    || (typeof data.message === 'string' && data.message.includes('风控'))
+}
+
+function reinitOnWindControl() {
+  try {
+    reinitSigner()
+  } catch (_) {}
+}
+
+function applyLocationToPayload(payload, lat, lng) {
+  if (!payload?.pageQuery || !payload?.commonParams?.location) return
+  const latText = String(lat)
+  const lngText = String(lng)
+  const latNumber = parseFloat(latText)
+  const lngNumber = parseFloat(lngText)
+
+  payload.pageQuery.lat = latText
+  payload.pageQuery.lng = lngText
+  payload.pageQuery.latitude = latText
+  payload.pageQuery.longitude = lngText
+  payload.commonParams.location.lat = latNumber
+  payload.commonParams.location.lng = lngNumber
+  payload.commonParams.location.latitude = latNumber
+  payload.commonParams.location.longitude = lngNumber
+}
+
+function buildLocationObject(longitude, latitude) {
+  const locationObj = { accuracy: 0 }
+  if (longitude !== undefined && longitude !== null && longitude !== '') {
+    const lng = parseFloat(longitude)
+    if (Number.isFinite(lng)) {
+      locationObj.longitude = lng
+      locationObj.lng = lng
+    }
+  }
+  if (latitude !== undefined && latitude !== null && latitude !== '') {
+    const lat = parseFloat(latitude)
+    if (Number.isFinite(lat)) {
+      locationObj.latitude = lat
+      locationObj.lat = lat
+    }
+  }
+  return locationObj
 }
 
 function isAllPlaceholderCoupons(couponsInfoList) {
@@ -160,7 +220,8 @@ function extractShopLocation(res) {
   return null
 }
 
-function buildCommonParams({ token, uuid, finger, userId, openId, unionId, cityId, latitude, longitude, userAgent }) {
+function buildCommonParams({ token, uuid, finger, userId, openId, unionId, cityId, latitude, longitude, platform }) {
+  const cfg = getPlatformConfig(platform)
   return {
     location: {
       lat: parseFloat(latitude) || 41.748709,
@@ -186,7 +247,7 @@ function buildCommonParams({ token, uuid, finger, userId, openId, unionId, cityI
       version: '',
       systemVersion: '',
       device: '',
-      platform: 'android',
+      platform: cfg.systemPlatform,
       IS_MT: true,
       IS_DP: false,
       IS_TICKET: false,
@@ -213,7 +274,7 @@ function buildCommonParams({ token, uuid, finger, userId, openId, unionId, cityI
         isWebInHarmonyMSCMiniProgram: false
       },
       isDebug: false,
-      userAgent: userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090a13) UnifiedPCWindowsWechat(0xf254181d) XWEB/19201 miniProgram/wxde8ac0a21135c07d'
+      userAgent: cfg.userAgent
     },
     storage: {},
     isPreview: true,
@@ -240,7 +301,7 @@ async function resolveGiftIdFromReceivePreview({ token, giftIdEncrypt, orderId, 
     cityId,
     latitude,
     longitude,
-    userAgent: options.userAgent
+    platform: options.platform
   })
 
   const payload = {
@@ -276,8 +337,7 @@ async function resolveGiftIdFromReceivePreview({ token, giftIdEncrypt, orderId, 
     minifyHttpResponse: '1'
   }
 
-  const payloadStr = JSON.stringify(payload)
-  const signedUrl = getSignedUrl(baseUrl, payloadStr, 'POST')
+  const signedUrl = getSignedUrl({ method: 'POST', url: baseUrl, body: payload, cookies: DEFAULT_COOKIES })
   const response = await axiosClient.post(signedUrl, payload, { headers })
   const giftId = extractGiftIdFromGiftReceiveResponse(response.data)
   debugLog(`[Backend API] gift receive preview resolved giftId: ${giftId || '-'}`)
@@ -285,7 +345,7 @@ async function resolveGiftIdFromReceivePreview({ token, giftIdEncrypt, orderId, 
 }
 
 /**
- * 获取订单券码信息
+ * 获取订单券码信息（普通单走轻量 payload，礼物单走专用逻辑；对齐 mt-qrcode-web）
  */
 async function getCouponList(token, orderId, options = {}) {
   const orderIdStr = String(orderId)
@@ -295,86 +355,73 @@ async function getCouponList(token, orderId, options = {}) {
     options.giftIdEnc,
     isProbablyGiftIdEncrypt(orderIdStr) ? orderIdStr : ''
   )
-  let resolvedGiftId = firstNonEmpty(options.giftId, options.gift_id, options.plainGiftId)
-  let isGift = Boolean(resolvedGiftId) || isPlainGiftId(orderIdStr)
+  const resolvedGiftId = firstNonEmpty(options.giftId, options.gift_id, options.plainGiftId)
+  const isGift = Boolean(resolvedGiftId) || isPlainGiftId(orderIdStr) || Boolean(giftIdEncrypt)
 
-  const baseUrl = `https://apimobile.meituan.com/foodtrade/order/api/detail/preview?duo_csdk_v=1&page_protocol_version=0001&pre_trace_id=&token=${token}&yodaReady=h5&csecplatform=4&csecversion=4.2.0`
+  const platform = options.platform || DEFAULT_PLATFORM
+  if (!options.platform) options.platform = platform
 
-  // 生成随机 UUID
-  const generateUuid = () => {
-    const hex = () => Math.floor(Math.random() * 16777216).toString(16).padStart(6, '0')
-    return `${hex()}${hex()}-${hex()}-${hex()}-${hex()}-${hex()}${hex()}${hex()}`
+  if (isGift) {
+    return await getGiftCouponList(token, resolvedGiftId || orderIdStr, {
+      ...options,
+      giftIdEncrypt,
+      platform,
+    })
   }
-  const uuid = options.uuid || generateUuid()
-  const finger = options.finger || `${Math.random().toString(36).substring(2, 15)}`
+
+  return await getNormalCouponList(token, orderIdStr, options)
+}
+
+/**
+ * 普通订单查券（轻量 payload，与 mt-qrcode-web / Electron 对齐）
+ */
+async function getNormalCouponList(token, orderIdStr, options = {}) {
+  const { longitude, latitude } = options
+  const platform = options.platform || DEFAULT_PLATFORM
+  const cfg = getPlatformConfig(platform)
+  const baseUrl = `https://apimobile.meituan.com/foodtrade/order/api/detail/preview?duo_csdk_v=1&page_protocol_version=0001&pre_trace_id=&token=${token}&yodaReady=h5&csecplatform=4&csecversion=4.0.2`
+
+  const locationObj = buildLocationObject(longitude, latitude)
 
   const payload = {
     pageQuery: {
-      cityId: options.cityId || "603",
-      locCityId: options.cityId || "603",
-      lat: options.latitude || "41.748709",
-      lng: options.longitude || "86.159215",
-      finger: finger,
-      orderId: isGift ? undefined : orderIdStr,
-      giftId: isGift ? (resolvedGiftId || orderIdStr) : undefined,
-      rcf_uniqueid: `rcff1d5.60cb98145e36a.acc1d6caf-6c86.24fc73c32-4209.bb9bcae89-7db1.66a67ddd2-9315.cb595a134-default-${Date.now()}`,
-      rcf_token: "5cac67121c9d446c8c2d7b93",
-      programName: "mt",
-      mina_name: "mt-weapp",
-      openId: options.openId || "",
-      token: token,
-      userId: options.userId || "",
-      uuid: uuid,
-      utmMedium: "WEIXINPROGRAM",
-      appVersion: "10.12.1",
-      envPlatform: "wx",
-      platform: "ANDROID",
-      uniPlatform: "windows",
-      expoId: options.expoId || "",
-      utmTerm: "0",
-      utmCampaign: "0",
-      unionId: options.unionId || "",
-      app_version: "10.12.1",
-      scene: "1256",
-      __lxsdk_params: options.lxsdkParams || "",
-      _lx_tag: options.lxTag || "",
-      _lx_ver: "3.17.5"
+      cityId: '795',
+      lat: latitude,
+      lng: longitude,
+      locCityId: '795',
+      orderId: orderIdStr,
+      programName: 'mt',
+      mina_name: 'mt-weapp',
+      token,
+      utmMedium: 'WEIXINPROGRAM',
+      appVersion: '9.27.2',
+      envPlatform: 'wx',
+      platform: cfg.platform,
+      uniPlatform: cfg.uniPlatform,
+      utmTerm: '0',
+      utmCampaign: '0',
+      app_version: '9.27.2',
+      scene: '1256',
+      _lx_ver: '3.17.5',
     },
     commonParams: {
-      location: {
-        lat: parseFloat(options.latitude) || 41.748709,
-        lng: parseFloat(options.longitude) || 86.159215,
-        accuracy: 0
-      },
-      userInfo: {
-        userId: options.userId || "",
-        token: token,
-        uuid: uuid,
-        openId: options.openId || "",
-        wxUnionId: options.unionId || "",
-        uuidV2: options.openId || ""
-      },
-      cityInfo: {
-        cityId: options.cityId || "603",
-        locCityId: options.cityId || "603"
-      },
-      fingerprint: {
-        fingerprint: finger
-      },
+      location: locationObj,
+      userInfo: { token },
+      cityInfo: { cityId: '795', locCityId: '795' },
+      fingerprint: { fingerprint: '' },
       systemInfo: {
-        version: "",
-        systemVersion: "",
-        device: "",
-        platform: "android",
+        version: '',
+        systemVersion: '',
+        device: '',
+        platform: cfg.systemPlatform,
         IS_MT: true,
         IS_DP: false,
         IS_TICKET: false,
-        IS_HOTEL: false,
         isMRN: false,
         isWeb: true,
         isWeChatMiniProgram: false,
-        mpAppId: "wxde8ac0a21135c07d",
-        mpAppVersion: "10.12.1",
+        mpAppId: 'wxde8ac0a21135c07d',
+        mpAppVersion: '9.27.2',
         envInWeb: {
           isWebInApp: false,
           isWebInMtApp: false,
@@ -389,40 +436,249 @@ async function getCouponList(token, orderId, options = {}) {
           isWebInBaiduMiniProgram: false,
           isWebInDpBaiduMiniProgram: false,
           isWebInMtBaiduMiniProgram: false,
-          isWebInHarmonyMSCMiniProgram: false
+          isWebInHarmonyMSCMiniProgram: false,
         },
         isDebug: false,
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090a13) UnifiedPCWindowsWechat(0xf254181d) XWEB/19201 miniProgram/wxde8ac0a21135c07d'
+        userAgent: cfg.userAgent,
       },
-      storage: {},
+      storage: { deliveryAddrCacheJson: '' },
       isPreview: true,
       isUpdate: false,
       isSubmit: false,
-      isCheck: false
     },
     prevData: {},
     nodeDataMap: {},
     updatePropMap: {},
     payload: {},
-    cacheDynamicComponent: { protocolVersion: "0001" },
-    pageId: "12299",
-    pageProtocolId: "0340",
-    minifyHttpResponse: "1"
+    cacheDynamicComponent: { protocolVersion: '0001' },
+    pageId: '12299',
+    pageProtocolId: '0192',
   }
 
+  // 普通单不带 Cookie Header（与 mt-qrcode-web 一致；DEFAULT_COOKIES 仅用于签名）
   const headers = {
-    'Host': 'apimobile.meituan.com',
-    'Connection': 'keep-alive',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090a13) UnifiedPCWindowsWechat(0xf254181d) XWEB/19201 miniProgram/wxde8ac0a21135c07d',
-    'Accept': 'application/json, text/plain, */*',
-    'Origin': 'https://awp.meituan.com',
+    Host: 'apimobile.meituan.com',
+    Connection: 'keep-alive',
+    Accept: 'application/json, text/plain, */*',
+    'User-Agent': cfg.userAgent,
+    Origin: 'https://awp.meituan.com',
     'Sec-Fetch-Site': 'same-site',
     'Sec-Fetch-Mode': 'cors',
     'Sec-Fetch-Dest': 'empty',
-    'Referer': 'https://awp.meituan.com/',
+    Referer: 'https://awp.meituan.com/',
     'Accept-Language': 'zh-CN,zh;q=0.9',
-    'Cookie': options.cookie || `WEBDFPID=${Date.now()}KQUUAEQfd79fef3d01d5e9aadc18ccd4d0c95074632-${Date.now()}-${Date.now()}KQUUAEQfd79fef3d01d5e9aadc18ccd4d0c95074632; _lxsdk_cuid=${uuid}; _lxsdk=${uuid}`,
-    'Content-Type': 'application/json'
+    'Content-Type': 'application/json',
+  }
+
+  const maxRetries = 3
+  let lastError = null
+
+  debugLog(
+    `[Backend API] getNormalCouponList orderId=${orderIdStr}, platform=${platform}, UA=${(cfg.userAgent || '').substring(0, 60)}...`
+  )
+
+  try {
+    for (let retry = 0; retry < maxRetries; retry++) {
+      try {
+        const signedUrl = getSignedUrl({ method: 'POST', url: baseUrl, body: payload, cookies: DEFAULT_COOKIES })
+        debugLog(`[Backend API] 普通单请求 orderId=${orderIdStr}, retry=${retry + 1}/${maxRetries}`)
+
+        const response = await axiosClient.post(signedUrl, payload, { headers })
+        debugLog(`[Backend API] Response status: ${response.status}`)
+        debugLog(`\n====== 美团接口原始响应 ======`)
+        debugLog(JSON.stringify(response.data, null, 2))
+        debugLog(`=============================\n`)
+
+        if (isWindControlResponse(response.data)) {
+          lastError = new Error('WIND_CONTROL')
+          reinitOnWindControl()
+          if (retry < maxRetries - 1) {
+            await new Promise((r) => setTimeout(r, 1000 * (retry + 1)))
+            continue
+          }
+          return { success: false, error: 'WIND_CONTROL', isWindControl: true, coupons: [] }
+        }
+
+        const coupons = parseCouponResponse(response.data, '')
+        const extractedShopLocation = extractShopLocation(response.data)
+
+        if (isAllPlaceholderCoupons(coupons) && !options._shopLocationRetried) {
+          if (extractedShopLocation?.lat && extractedShopLocation?.lng) {
+            debugLog(`[Backend API] 占位券码，店铺位置重查: lat=${extractedShopLocation.lat}, lng=${extractedShopLocation.lng}`)
+            await new Promise((r) => setTimeout(r, 300))
+
+            const shopResult = await getNormalCouponList(token, orderIdStr, {
+              ...options,
+              longitude: extractedShopLocation.lng,
+              latitude: extractedShopLocation.lat,
+              _shopLocationRetried: true,
+            })
+            if (shopResult.success && shopResult.coupons.length > 0 && !isAllPlaceholderCoupons(shopResult.coupons)) {
+              return shopResult
+            }
+
+            const lngNum = parseFloat(extractedShopLocation.lng)
+            const latNum = parseFloat(extractedShopLocation.lat)
+            if (Number.isFinite(lngNum) && Number.isFinite(latNum)) {
+              const tweakedLongitude = (lngNum + 0.00001).toFixed(6)
+              const tweakedLatitude = (latNum + 0.00001).toFixed(6)
+              debugLog(`[Backend API] 坐标微调重查: lat=${tweakedLatitude}, lng=${tweakedLongitude}`)
+              await new Promise((r) => setTimeout(r, 200))
+              const tweakedResult = await getNormalCouponList(token, orderIdStr, {
+                ...options,
+                longitude: tweakedLongitude,
+                latitude: tweakedLatitude,
+                _shopLocationRetried: true,
+              })
+              if (tweakedResult.success && tweakedResult.coupons.length > 0 && !isAllPlaceholderCoupons(tweakedResult.coupons)) {
+                return tweakedResult
+              }
+            }
+          } else {
+            debugLog('[Backend API] 占位券码但未提取到店铺经纬度')
+          }
+
+          // 与对照项目一致：全部占位则不返回占位码
+          return { success: true, coupons: [], giftId: '', shopLocation: extractedShopLocation }
+        }
+
+        if (coupons.length === 0 && retry < maxRetries - 1) {
+          lastError = new Error('NO_COUPON_DATA')
+          reinitOnWindControl()
+          await new Promise((r) => setTimeout(r, 1000 * (retry + 1)))
+          continue
+        }
+
+        return { success: true, coupons, giftId: '', shopLocation: extractedShopLocation }
+      } catch (error) {
+        lastError = error
+        if (error.response?.status === 403 || error.response?.status === 418) {
+          lastError = new Error('WIND_CONTROL')
+          reinitOnWindControl()
+        }
+        if (retry < maxRetries - 1) {
+          await new Promise((r) => setTimeout(r, 1000 * (retry + 1)))
+          continue
+        }
+      }
+    }
+
+    const isWindControl = lastError && ['WIND_CONTROL', 'NO_COUPON_DATA'].includes(lastError.message)
+    return {
+      success: false,
+      error: lastError?.message || 'UNKNOWN',
+      isWindControl: Boolean(isWindControl),
+      coupons: [],
+    }
+  } catch (error) {
+    console.error('[Backend API] Error:', error.message)
+    const isWindControl = error.response?.status === 418
+      || error.response?.status === 403
+      || String(error.message).includes('418')
+      || String(error.message).includes('WIND_CONTROL')
+    return { success: false, error: error.message, isWindControl, coupons: [] }
+  }
+}
+
+/**
+ * 礼物订单查券（保留完整字段）
+ */
+async function getGiftCouponList(token, giftId, options = {}) {
+  const giftIdInput = String(giftId || '')
+  const giftIdEncrypt = firstNonEmpty(
+    options.giftIdEncrypt,
+    options.gift_id_encrypt,
+    options.giftIdEnc,
+    isProbablyGiftIdEncrypt(giftIdInput) ? giftIdInput : ''
+  )
+  let resolvedGiftId = firstNonEmpty(
+    options.giftId,
+    options.gift_id,
+    options.plainGiftId,
+    isProbablyGiftIdEncrypt(giftIdInput) ? '' : giftIdInput
+  )
+
+  const platform = options.platform || DEFAULT_PLATFORM
+  const cfg = getPlatformConfig(platform)
+  const baseUrl = `https://apimobile.meituan.com/foodtrade/order/api/detail/preview?duo_csdk_v=1&page_protocol_version=0001&pre_trace_id=&token=${token}&yodaReady=h5&csecplatform=4&csecversion=4.2.0`
+
+  const generateUuid = () => {
+    const hex = () => Math.floor(Math.random() * 16777216).toString(16).padStart(6, '0')
+    return `${hex()}${hex()}-${hex()}-${hex()}-${hex()}-${hex()}${hex()}${hex()}`
+  }
+  const uuid = options.uuid || generateUuid()
+  const finger = options.finger || `${Math.random().toString(36).substring(2, 15)}`
+
+  debugLog(
+    `[Backend API] getGiftCouponList giftId=${resolvedGiftId || giftIdInput}, platform=${platform}`
+  )
+
+  const payload = {
+    pageQuery: {
+      cityId: options.cityId || '603',
+      locCityId: options.cityId || '603',
+      lat: options.latitude || '41.748709',
+      lng: options.longitude || '86.159215',
+      finger,
+      giftId: resolvedGiftId || undefined,
+      rcf_uniqueid: `rcff1d5.60cb98145e36a.acc1d6caf-6c86.24fc73c32-4209.bb9bcae89-7db1.66a67ddd2-9315.cb595a134-default-${Date.now()}`,
+      rcf_token: '5cac67121c9d446c8c2d7b93',
+      programName: 'mt',
+      mina_name: 'mt-weapp',
+      openId: options.openId || '',
+      token,
+      userId: options.userId || '',
+      uuid,
+      utmMedium: 'WEIXINPROGRAM',
+      appVersion: '10.12.1',
+      envPlatform: 'wx',
+      platform: cfg.platform,
+      uniPlatform: cfg.uniPlatform,
+      expoId: options.expoId || '',
+      utmTerm: '0',
+      utmCampaign: '0',
+      unionId: options.unionId || '',
+      app_version: '10.12.1',
+      scene: '1256',
+      __lxsdk_params: options.lxsdkParams || '',
+      _lx_tag: options.lxTag || '',
+      _lx_ver: '3.17.5',
+    },
+    commonParams: buildCommonParams({
+      token,
+      uuid,
+      finger,
+      userId: options.userId,
+      openId: options.openId,
+      unionId: options.unionId,
+      cityId: options.cityId,
+      latitude: options.latitude,
+      longitude: options.longitude,
+      platform,
+    }),
+    prevData: {},
+    nodeDataMap: {},
+    updatePropMap: {},
+    payload: {},
+    cacheDynamicComponent: { protocolVersion: '0001' },
+    pageId: '12299',
+    pageProtocolId: '0340',
+    minifyHttpResponse: '1',
+  }
+
+  const headers = {
+    Host: 'apimobile.meituan.com',
+    Connection: 'keep-alive',
+    'User-Agent': cfg.userAgent,
+    Accept: 'application/json, text/plain, */*',
+    Origin: 'https://awp.meituan.com',
+    'Sec-Fetch-Site': 'same-site',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Dest': 'empty',
+    Referer: 'https://awp.meituan.com/',
+    'Accept-Language': 'zh-CN,zh;q=0.9',
+    Cookie: options.cookie || serializeCookies(DEFAULT_COOKIES),
+    'Content-Type': 'application/json',
   }
 
   try {
@@ -435,83 +691,104 @@ async function getCouponList(token, orderId, options = {}) {
         options,
         uuid,
         finger,
-        headers
+        headers,
       })
       if (resolvedGiftId) {
-        isGift = true
-        delete payload.pageQuery.orderId
         payload.pageQuery.giftId = resolvedGiftId
         payload.pageQuery.giftIdEncrypt = giftIdEncrypt
       }
     }
 
-    const payloadStr = JSON.stringify(payload)
-    const signedUrl = getSignedUrl(baseUrl, payloadStr, 'POST')
+    if (!payload.pageQuery.giftId) {
+      return { success: false, error: '无法解析 giftId', coupons: [] }
+    }
 
-    debugLog(`[Backend API] Querying order: ${orderIdStr}, isGift: ${isGift}, giftId: ${resolvedGiftId || '-'}`)
+    const maxRetries = 3
+    let lastError = null
 
-    const response = await axiosClient.post(signedUrl, payload, { headers })
+    for (let retry = 0; retry < maxRetries; retry++) {
+      try {
+        const signedUrl = getSignedUrl({ method: 'POST', url: baseUrl, body: payload, cookies: DEFAULT_COOKIES })
+        debugLog(`[Backend API] 礼物单请求 giftId=${payload.pageQuery.giftId}, retry=${retry + 1}/${maxRetries}`)
 
-    debugLog(`[Backend API] Response status: ${response.status}`)
-    debugLog(`[Backend API] Response data keys: ${Object.keys(response.data || {})}`)
-    debugLog(`[Backend API] nodeDataMap keys: ${Object.keys(response.data?.data?.nodeDataMap || {}).join(', ')}`)
-    debugLog(`\n====== 美团接口原始响应 ======`)
-    debugLog(JSON.stringify(response.data, null, 2))
-    debugLog(`=============================\n`)
-
-    // 解析响应
-    const coupons = parseCouponResponse(response.data, resolvedGiftId || payload.pageQuery.giftId || '')
-
-    // 检查是否全部为占位券码 (000000000000)，如果是则尝试使用店铺位置重新查询
-    if (isAllPlaceholderCoupons(coupons) && !options._shopLocationRetried) {
-      debugLog('[Backend API] 检测到全部券码为000000000000，尝试提取店铺位置重新查询...')
-
-      const extractedShopLocation = extractShopLocation(response.data)
-
-      if (extractedShopLocation && extractedShopLocation.lat && extractedShopLocation.lng) {
-        debugLog(`[Backend API] 使用店铺位置重新查询: lat=${extractedShopLocation.lat}, lng=${extractedShopLocation.lng}`)
-
-        // 等待300ms后重试
-        await new Promise(r => setTimeout(r, 300))
-
-        // 使用店铺位置重新构建payload
-        const retryPayload = JSON.parse(JSON.stringify(payload))
-        retryPayload.pageQuery.lat = extractedShopLocation.lat
-        retryPayload.pageQuery.lng = extractedShopLocation.lng
-        retryPayload.pageQuery.latitude = extractedShopLocation.lat
-        retryPayload.pageQuery.longitude = extractedShopLocation.lng
-        retryPayload.commonParams.location.lat = parseFloat(extractedShopLocation.lat)
-        retryPayload.commonParams.location.lng = parseFloat(extractedShopLocation.lng)
-
-        const retryPayloadStr = JSON.stringify(retryPayload)
-        const retrySignedUrl = getSignedUrl(baseUrl, retryPayloadStr, 'POST')
-
-        debugLog(`[Backend API] 重新查询订单: ${orderIdStr}`)
-
-        const retryResponse = await axiosClient.post(retrySignedUrl, retryPayload, { headers })
-
-        debugLog(`[Backend API] 重试响应状态: ${retryResponse.status}`)
-        debugLog(`\n====== 美团接口重试响应 ======`)
-        debugLog(JSON.stringify(retryResponse.data, null, 2))
+        const response = await axiosClient.post(signedUrl, payload, { headers })
+        debugLog(`\n====== 美团礼物接口原始响应 ======`)
+        debugLog(JSON.stringify(response.data, null, 2))
         debugLog(`=============================\n`)
 
-        const retryCoupons = parseCouponResponse(retryResponse.data, resolvedGiftId || retryPayload.pageQuery.giftId || '')
-
-        // 如果重试后获取到有效券码，返回重试结果
-        if (retryCoupons.length > 0 && !isAllPlaceholderCoupons(retryCoupons)) {
-          debugLog('[Backend API] 使用店铺位置重新查询成功，获取到有效券码')
-          return { success: true, coupons: retryCoupons, giftId: resolvedGiftId || retryPayload.pageQuery.giftId || '' }
+        if (isWindControlResponse(response.data)) {
+          lastError = new Error('WIND_CONTROL')
+          reinitOnWindControl()
+          if (retry < maxRetries - 1) {
+            await new Promise((r) => setTimeout(r, 1000 * (retry + 1)))
+            continue
+          }
+          return { success: false, error: 'WIND_CONTROL', isWindControl: true, coupons: [] }
         }
-        debugLog('[Backend API] 使用店铺位置重新查询仍为占位券码，返回原始结果')
-      } else {
-        debugLog('[Backend API] 未能从响应中提取到店铺位置信息')
+
+        const coupons = parseCouponResponse(response.data, resolvedGiftId || payload.pageQuery.giftId || '')
+        const extractedShopLocation = extractShopLocation(response.data)
+
+        if (isAllPlaceholderCoupons(coupons) && !options._shopLocationRetried && extractedShopLocation?.lat && extractedShopLocation?.lng) {
+          debugLog(`[Backend API] 礼物占位券码，店铺位置重查`)
+          await new Promise((r) => setTimeout(r, 300))
+          const retryPayload = JSON.parse(JSON.stringify(payload))
+          applyLocationToPayload(retryPayload, extractedShopLocation.lat, extractedShopLocation.lng)
+          const retrySignedUrl = getSignedUrl({ method: 'POST', url: baseUrl, body: retryPayload, cookies: DEFAULT_COOKIES })
+          const retryResponse = await axiosClient.post(retrySignedUrl, retryPayload, { headers })
+          const retryCoupons = parseCouponResponse(retryResponse.data, resolvedGiftId || retryPayload.pageQuery.giftId || '')
+          if (retryCoupons.length > 0 && !isAllPlaceholderCoupons(retryCoupons)) {
+            return { success: true, coupons: retryCoupons, giftId: resolvedGiftId || retryPayload.pageQuery.giftId || '' }
+          }
+
+          const lngNum = parseFloat(extractedShopLocation.lng)
+          const latNum = parseFloat(extractedShopLocation.lat)
+          if (Number.isFinite(lngNum) && Number.isFinite(latNum)) {
+            await new Promise((r) => setTimeout(r, 200))
+            applyLocationToPayload(retryPayload, (latNum + 0.00001).toFixed(6), (lngNum + 0.00001).toFixed(6))
+            const tweakSignedUrl = getSignedUrl({ method: 'POST', url: baseUrl, body: retryPayload, cookies: DEFAULT_COOKIES })
+            const tweakResponse = await axiosClient.post(tweakSignedUrl, retryPayload, { headers })
+            const tweakCoupons = parseCouponResponse(tweakResponse.data, resolvedGiftId || retryPayload.pageQuery.giftId || '')
+            if (tweakCoupons.length > 0 && !isAllPlaceholderCoupons(tweakCoupons)) {
+              return { success: true, coupons: tweakCoupons, giftId: resolvedGiftId || retryPayload.pageQuery.giftId || '' }
+            }
+          }
+        }
+
+        if (coupons.length === 0 && retry < maxRetries - 1) {
+          lastError = new Error('NO_COUPON_DATA')
+          reinitOnWindControl()
+          await new Promise((r) => setTimeout(r, 1000 * (retry + 1)))
+          continue
+        }
+
+        return { success: true, coupons, giftId: resolvedGiftId || payload.pageQuery.giftId || '' }
+      } catch (error) {
+        lastError = error
+        if (error.response?.status === 403 || error.response?.status === 418) {
+          lastError = new Error('WIND_CONTROL')
+          reinitOnWindControl()
+        }
+        if (retry < maxRetries - 1) {
+          await new Promise((r) => setTimeout(r, 1000 * (retry + 1)))
+          continue
+        }
       }
     }
 
-    return { success: true, coupons, giftId: resolvedGiftId || payload.pageQuery.giftId || '' }
+    const isWindControl = lastError && ['WIND_CONTROL', 'NO_COUPON_DATA'].includes(lastError.message)
+    return {
+      success: false,
+      error: lastError?.message || 'UNKNOWN',
+      isWindControl: Boolean(isWindControl),
+      coupons: [],
+    }
   } catch (error) {
-    console.error('[Backend API] Error:', error.message)
-    const isWindControl = error.response?.status === 418 || String(error.message).includes('418')
+    console.error('[Backend API] Gift Error:', error.message)
+    const isWindControl = error.response?.status === 418
+      || error.response?.status === 403
+      || String(error.message).includes('418')
+      || String(error.message).includes('WIND_CONTROL')
     return { success: false, error: error.message, isWindControl, coupons: [] }
   }
 }

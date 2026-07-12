@@ -5,6 +5,15 @@ import { useDataStore } from '../stores/dataStore'
 import { useToastStore } from '../stores/toastStore'
 import { confirm } from '../stores/confirmStore'
 
+const PLATFORM_OPTIONS = [
+  { key: 'android', label: '安卓' },
+  { key: 'windows', label: 'Windows' },
+  { key: 'ios', label: '苹果(iOS)' },
+  { key: 'harmony', label: '鸿蒙(Harmony)' },
+]
+
+const PLATFORM_LABELS = Object.fromEntries(PLATFORM_OPTIONS.map(o => [o.key, o.label]))
+
 function AccountPage() {
   // 全局缓存
   const { accounts, setAccounts, fetchAccounts } = useDataStore()
@@ -12,6 +21,7 @@ function AccountPage() {
 
   const [remark, setRemark] = useState('')
   const [url, setUrl] = useState('')
+  const [platform, setPlatform] = useState('windows')
   const [searchKeyword, setSearchKeyword] = useState('')
   const [loading, setLoading] = useState(false)
   const [selectedRows, setSelectedRows] = useState(new Set())
@@ -26,6 +36,7 @@ function AccountPage() {
   const [editCsecuuid, setEditCsecuuid] = useState('')
   const [editOpenId, setEditOpenId] = useState('')
   const [editOpenIdCipher, setEditOpenIdCipher] = useState('')
+  const [editPlatform, setEditPlatform] = useState('windows')
   const [editIndex, setEditIndex] = useState(-1)
 
   const [lastCaptured, setLastCaptured] = useState(null)
@@ -150,7 +161,12 @@ function AccountPage() {
     let csecuuid = ''
     let accountUrl = ''
 
-    // 只支持粘贴文本格式（Token: xxx OpenId: xxx...）
+    if (!platform) {
+      showMessage('error', '请选择设备平台')
+      return
+    }
+
+    // 优先解析抓包文本；否则解析网页版 CK URL
     const pastedData = parsePastedText(url.trim())
     if (pastedData) {
       userid = pastedData.userid
@@ -160,8 +176,14 @@ function AccountPage() {
       csecuuid = pastedData.csecuuid
       accountUrl = buildAccountUrl(userid, token)
     } else {
-      showMessage('error', '请粘贴 Token/OpenId/OpenIdCipher/CsecUUID/UserId/UUID/CityId/Position 格式的文本')
-      return
+      const parsed = parseUserUrl(url.trim())
+      userid = parsed.userid
+      token = parsed.token
+      accountUrl = url.trim()
+      if (!userid || !token) {
+        showMessage('error', '请粘贴抓包文本，或网页版 Token 链接（含 userId/token）')
+        return
+      }
     }
 
     // 检查账号是否已存在
@@ -198,6 +220,7 @@ function AccountPage() {
       token,
       url: accountUrl,
       status,  // 添加检查后的状态
+      platform,
       csecuuid: csecuuid || capturedExtras?.csecuuid || '',
       open_id: openId || capturedExtras?.openId || '',
       open_id_cipher: openIdCipher || capturedExtras?.openIdCipher || ''
@@ -205,23 +228,24 @@ function AccountPage() {
 
     try {
       const response = await accountsApi.capture(newAccount)
-      // 直接使用返回的数据更新本地状态，而不是重新获取所有账号
+      // 以用户本次选择的平台为准（避免接口默认 windows / 旧缓存覆盖）
       if (response.data) {
-        const updatedAccount = response.data
-        // 检查是否已存在于列表中
-        const existingIndex = accounts.findIndex(a => a.id === updatedAccount.id)
+        const updatedAccount = {
+          ...response.data,
+          platform
+        }
+        const existingIndex = accounts.findIndex(a => a.id === updatedAccount.id || a.userid === updatedAccount.userid)
         if (existingIndex >= 0) {
-          // 更新现有账号
           const newAccounts = [...accounts]
           newAccounts[existingIndex] = updatedAccount
           setAccounts(newAccounts)
         } else {
-          // 添加新账号
           setAccounts([...accounts, updatedAccount])
         }
       }
       setRemark('')
       setUrl('')
+      setPlatform('windows')
       setLastCaptured(null)
       const statusMsg = status === 'normal' ? '（有效）' : status === 'invalid' ? '（无效）' : ''
       showMessage('success', (existingAccount ? '已更新账号' : '已添加账号') + statusMsg)
@@ -269,8 +293,9 @@ function AccountPage() {
             token,
             url: account.url,
             csecuuid: account.csecuuid,
-            open_id: account.openId,
-            open_id_cipher: account.openIdCipher
+            open_id: account.openId || account.open_id,
+            open_id_cipher: account.openIdCipher || account.open_id_cipher,
+            platform: account.platform || 'android'
           })
         }
         await loadAccounts(true)
@@ -293,6 +318,7 @@ function AccountPage() {
         csecuuid: a.csecuuid,
         openId: a.open_id,
         openIdCipher: a.open_id_cipher,
+        platform: a.platform || 'android',
         status: a.status
       }))
       await window.electronAPI.accountsExport(exportData)
@@ -390,6 +416,7 @@ function AccountPage() {
   const handleRowDoubleClick = (account) => {
     setRemark(account.remark)
     setUrl(account.url)
+    setPlatform(account.platform || 'android')
     setLastCaptured(null)
   }
 
@@ -522,8 +549,9 @@ function AccountPage() {
         token: account.token,
         giftId: giftId,
         userId: account.userid,
-        openId: account.open_id,
-        uuid: account.csecuuid
+        openId: account.open_id || '',
+        uuid: account.csecuuid,
+        platform: account.platform || 'android'
       })
 
       if (result.success && result.data) {
@@ -594,6 +622,19 @@ function AccountPage() {
                 />
               </div>
 
+              <div className="mt-3">
+                <label className="block text-xs text-gray-500 mb-1">设备平台</label>
+                <select
+                  value={editPlatform}
+                  onChange={(e) => setEditPlatform(e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                >
+                  {PLATFORM_OPTIONS.map(opt => (
+                    <option key={opt.key} value={opt.key}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+
               <div className="mt-3 text-xs text-gray-500 mb-2">以下字段可选，如抹取失败可手动填写：</div>
               <div className="grid grid-cols-1 gap-3">
                 <input
@@ -638,20 +679,35 @@ function AccountPage() {
                       showMessage('error', '请填写 USERID 与 TOKEN')
                       return
                     }
+                    if (!editPlatform) {
+                      showMessage('error', '请选择设备平台')
+                      return
+                    }
 
                     const account = accounts[editIndex]
                     const nextUrl = buildUpdatedUrl(account.url || '', newUserid, newToken)
 
                     try {
-                      await accountsApi.update(account.id, {
+                      const updatePayload = {
                         userid: newUserid,
                         token: newToken,
                         url: nextUrl,
+                        platform: editPlatform,
                         csecuuid: editCsecuuid.trim(),
                         open_id: editOpenId.trim(),
                         open_id_cipher: editOpenIdCipher.trim()
-                      })
-                      await loadAccounts(true)
+                      }
+                      const response = await accountsApi.update(account.id, updatePayload)
+                      const updatedAccount = {
+                        ...(response.data || account),
+                        ...updatePayload,
+                        id: account.id,
+                        platform: editPlatform
+                      }
+                      const newAccounts = accounts.map((a, i) =>
+                        i === editIndex || a.id === account.id ? { ...a, ...updatedAccount } : a
+                      )
+                      setAccounts(newAccounts)
                       setEditOpen(false)
                       showMessage('success', '账号已修改')
                     } catch (error) {
@@ -730,9 +786,19 @@ function AccountPage() {
               setUrl(e.target.value)
               setLastCaptured(null)
             }}
-            placeholder="粘贴 Token/OpenId/OpenIdCipher/CsecUUID/UserId/UUID/CityId/Position 格式文本"
+            placeholder="粘贴抓包文本，或网页版 Token 链接（含 userId/token）"
             className="flex-[3] min-w-[300px] px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
           />
+          <select
+            value={platform}
+            onChange={(e) => setPlatform(e.target.value)}
+            className="min-w-[140px] px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            title="设备平台（影响查券 UA）"
+          >
+            {PLATFORM_OPTIONS.map(opt => (
+              <option key={opt.key} value={opt.key}>{opt.label}</option>
+            ))}
+          </select>
           <button onClick={handleAddOrUpdate} className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 flex items-center gap-2">
             <Plus className="w-4 h-4" /> 添加
           </button>
@@ -798,6 +864,7 @@ function AccountPage() {
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">备注名</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">userId</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">平台</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">token</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">完整URL</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">状态</th>
@@ -818,6 +885,19 @@ function AccountPage() {
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-900">{account.remark}</td>
                   <td className="px-4 py-3 text-sm text-gray-500 font-mono">{account.userid}</td>
+                  <td className="px-4 py-3 text-sm">
+                    <span
+                      className={`px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${
+                        account.platform === 'android' ? 'bg-green-100 text-green-700' :
+                        account.platform === 'windows' ? 'bg-blue-100 text-blue-700' :
+                        account.platform === 'ios' ? 'bg-gray-100 text-gray-700' :
+                        account.platform === 'harmony' ? 'bg-orange-100 text-orange-700' :
+                        'bg-gray-100 text-gray-600'
+                      }`}
+                    >
+                      {PLATFORM_LABELS[account.platform] || account.platform || 'Windows'}
+                    </span>
+                  </td>
                   <td className="px-4 py-3 text-sm text-gray-500 font-mono truncate max-w-[150px]" title={account.token}>
                     {(account.token || '').substring(0, 20)}...
                   </td>
@@ -912,7 +992,7 @@ function AccountPage() {
               ))}
               {accounts.length === 0 && (
                 <tr>
-                  <td colSpan="7" className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan="8" className="px-4 py-8 text-center text-gray-500">
                     暂无账号，请添加账号
                   </td>
                 </tr>
@@ -943,6 +1023,7 @@ function AccountPage() {
               setEditCsecuuid(String(account.csecuuid || ''))
               setEditOpenId(String(account.open_id || ''))
               setEditOpenIdCipher(String(account.open_id_cipher || ''))
+              setEditPlatform(String(account.platform || 'android'))
               setEditOpen(true)
               closeContextMenu()
             }}

@@ -306,7 +306,8 @@ ipcMain.handle('rebate-query-one', async (event, { account, orderId, giftIdEncry
       latitude: account.latitude,
       userId: account.userid,
       openId: account.openId,
-      uuid: account.csecuuid || 'c34d9b03-7520-47e3-9d7c-17a3d930c48d',
+      uuid: account.csecuuid || '',
+      platform: account.platform || 'android',
       giftIdEncrypt: giftIdEncrypt || account.giftIdEncrypt || account.gift_id_encrypt || ''
     })
 
@@ -487,16 +488,17 @@ ipcMain.handle('reset-certs', async () => {
 })
 
 // 风控检测
-ipcMain.handle('check-risk-control', async (event, { token, giftId, userId, openId, uuid }) => {
+ipcMain.handle('check-risk-control', async (event, { token, giftId, userId, openId, uuid, platform }) => {
   try {
     const MeituanAPI = require('./services/meituanAPI.cjs')
 
-    log('INFO', `风控检测 - giftId: ${giftId}, userId: ${userId}`)
+    log('INFO', `风控检测 - giftId: ${giftId}, userId: ${userId}, platform: ${platform || 'android'}`)
 
     const result = await MeituanAPI.getGiftCouponList(token, giftId, {
       userId: userId || '',
       openId: openId || '',
-      uuid: uuid || ''
+      uuid: uuid || '',
+      platform: platform || 'android'
     })
 
     return { success: true, data: result }

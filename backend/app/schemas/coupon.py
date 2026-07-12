@@ -44,6 +44,7 @@ class CouponQueryResponse(BaseModel):
     csecuuid: Optional[str] = None
     open_id: Optional[str] = None
     open_id_cipher: Optional[str] = None
+    platform: Optional[str] = None
     # 状态
     status: str
     message: str
