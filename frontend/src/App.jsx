@@ -16,6 +16,8 @@ import SettingsPage from './pages/SettingsPage'
 import UserPage from './pages/UserPage'
 import Toast from './components/Toast'
 import ConfirmDialog from './components/ConfirmDialog'
+import RiskControlDialog from './components/RiskControlDialog'
+import { useRiskControlStore } from './stores/riskControlStore'
 
 function PrivateRoute({ children }) {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
@@ -27,6 +29,7 @@ function App() {
   const isCheckingAuth = useSoftwareAuthStore((state) => state.isCheckingAuth)
   const setSoftwareAuthenticated = useSoftwareAuthStore((state) => state.setSoftwareAuthenticated)
   const initAuth = useSoftwareAuthStore((state) => state.initAuth)
+  const showRiskControl = useRiskControlStore((state) => state.showRiskControl)
 
   // Bug2 修复：应用启动时调用 initAuth() 检查本地授权
   useEffect(() => {
@@ -52,6 +55,17 @@ function App() {
     }
   }, [handleAuthInvalid, handleAuthVerified])
 
+  useEffect(() => {
+    const handleYodaVerification = (_event, details) => {
+      showRiskControl(details)
+    }
+
+    window.electronAPI.onYodaVerificationRequired(handleYodaVerification)
+    return () => {
+      window.electronAPI.offYodaVerificationRequired(handleYodaVerification)
+    }
+  }, [showRiskControl])
+
   // Bug2/9 修复：启动时显示检查中状态，避免 AuthPage 闪烁
   if (isCheckingAuth) {
     return (
@@ -75,6 +89,7 @@ function App() {
     <HashRouter>
       <Toast />
       <ConfirmDialog />
+      <RiskControlDialog />
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const AuthClient = require('./AuthClient.cjs')
@@ -39,6 +39,29 @@ log('INFO', 'Application starting...')
 let mainWindow = null
 let proxyServer = null
 let heartbeatController = null
+
+function getAllowedYodaVerificationUrl(value) {
+  try {
+    const url = new URL(String(value || ''))
+    return url.protocol === 'https:' && url.hostname === 'verify.meituan.com'
+      ? url.toString()
+      : ''
+  } catch (_) {
+    return ''
+  }
+}
+
+function createYodaVerificationPayload(error) {
+  return {
+    code: 'YODA_VERIFICATION_REQUIRED',
+    message: error.message,
+    generalPageUrl: getAllowedYodaVerificationUrl(error.generalPageUrl),
+    requestCode: error.requestCode || '',
+    riskLevel: error.riskLevel || '',
+    yodaCode: error.yodaCode,
+    status: error.status
+  }
+}
 
 // 鉴权配置
 const AUTH_CONFIG = {
@@ -296,6 +319,22 @@ ipcMain.handle('accounts-check-status', async (event, { userid, token }) => {
   }
 })
 
+// Open validated Yoda verification URL in the system browser
+ipcMain.handle('open-yoda-verification', async (event, generalPageUrl) => {
+  const allowedUrl = getAllowedYodaVerificationUrl(generalPageUrl)
+  if (!allowedUrl) {
+    return { success: false, error: '无效的风控验证地址' }
+  }
+
+  try {
+    await shell.openExternal(allowedUrl)
+    return { success: true }
+  } catch (error) {
+    log('ERROR', `Open Yoda verification URL error: ${error.message}`)
+    return { success: false, error: error.message }
+  }
+})
+
 // Rebate query - 使用 MeituanAPI 获取券码信息
 ipcMain.handle('rebate-query-one', async (event, { account, orderId, giftIdEncrypt }) => {
   try {
@@ -318,6 +357,17 @@ ipcMain.handle('rebate-query-one', async (event, { account, orderId, giftIdEncry
     return { success: true, data: { orderId, response: { data: coupons }, shopLocation: result.shopLocation || null } }
   } catch (error) {
     log('ERROR', `Rebate query error: ${error.message}`)
+
+    if (error.code === 'YODA_VERIFICATION_REQUIRED') {
+      const payload = createYodaVerificationPayload(error)
+      event.sender.send('yoda-verification-required', payload)
+      return {
+        success: false,
+        error: payload.message,
+        ...payload
+      }
+    }
+
     return { success: false, error: error.message }
   }
 })

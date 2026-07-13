@@ -755,22 +755,25 @@ function OrderListPage() {
       })
 
       const queryList = ordersToQuery
-      const CONCURRENCY = 3
-      const REQUEST_DELAY = 500
+      const requestIntervalMs = 600
+      let riskPaused = false
+      let processedCount = 0
 
-      for (let i = 0; i < queryList.length && myRunId === useDataStore.getState().orderQueryRunId; i += CONCURRENCY) {
-        const batch = queryList.slice(i, i + CONCURRENCY)
+      for (let index = 0; index < queryList.length; index++) {
+        if (myRunId !== useDataStore.getState().orderQueryRunId) break
 
+        const order = queryList[index]
         setOrderQueryProgress({
-          current: i,
+          current: index,
           total: returnedCount,
           message: hasMore
-            ? `正在查询 ${i + 1}-${Math.min(i + CONCURRENCY, returnedCount)}/${returnedCount}，共剩余 ${totalCount} 条待扫描...`
-            : `正在查询 ${i + 1}-${Math.min(i + CONCURRENCY, returnedCount)}/${returnedCount}...`
+            ? `正在查询 ${index + 1}/${returnedCount}，共剩余 ${totalCount} 条待扫描...`
+            : `正在查询 ${index + 1}/${returnedCount}...`
         })
 
-        const batchPromises = batch.map(order =>
-          window.electronAPI.rebateQueryOne({
+        let queryResult
+        try {
+          queryResult = await window.electronAPI.rebateQueryOne({
             account: {
               userid: account.userid,
               token: account.token,
@@ -780,50 +783,58 @@ function OrderListPage() {
               platform: account.platform || 'android'
             },
             orderId: order.order_view_id
-          }).then(async result => {
-            if (result.success && result.data?.response) {
-              const backendResponse = result.data.response
-              const coupons = stripPlaceholderCoupons(backendResponse.data)
+          })
+        } catch (error) {
+          console.error('Query coupon error:', error)
+          queryResult = { success: false, error: getErrorMessage(error, '未知错误') }
+        }
 
-              if (Array.isArray(coupons) && coupons.length > 0) {
-                for (const couponInfo of coupons) {
-                  try {
-                    await ordersApi.saveCoupon({
-                      account_id: parseInt(selectedAccountId),
-                      order_id: order.id,
-                      order_view_id: order.order_view_id,
-                      coupon_data: couponInfo,
-                      raw_data: backendResponse
-                    })
-                  } catch (saveError) {
-                    console.error('Save coupon error:', saveError)
-                  }
-                }
-                return { success: true, orderId: order.id }
+        if (myRunId !== useDataStore.getState().orderQueryRunId) break
+
+        if (queryResult?.code === 'YODA_VERIFICATION_REQUIRED') {
+          riskPaused = true
+          setOrderQueryProgress({
+            current: processedCount,
+            total: returnedCount,
+            message: `风控暂停：已处理 ${processedCount}/${returnedCount}，完成验证后请重新查询`
+          })
+          break
+        }
+
+        let querySucceeded = false
+        if (queryResult.success && queryResult.data?.response) {
+          const backendResponse = queryResult.data.response
+          const coupons = stripPlaceholderCoupons(backendResponse.data)
+
+          if (Array.isArray(coupons) && coupons.length > 0) {
+            for (const couponInfo of coupons) {
+              try {
+                await ordersApi.saveCoupon({
+                  account_id: parseInt(selectedAccountId),
+                  order_id: order.id,
+                  order_view_id: order.order_view_id,
+                  coupon_data: couponInfo,
+                  raw_data: backendResponse
+                })
+              } catch (saveError) {
+                console.error('Save coupon error:', saveError)
               }
             }
-            return { success: false, orderId: order.id }
-          }).catch(error => {
-            console.error('Query coupon error:', error)
-            return { success: false, orderId: order.id }
-          })
-        )
-
-        const batchResults = await Promise.all(batchPromises)
-
-        for (const result of batchResults) {
-          if (result.success) {
-            successCount++
-            successOrderIds.push(result.orderId)
-          } else {
-            failCount++
-            failOrderIds.push(result.orderId)
+            querySucceeded = true
           }
         }
 
-        if (i + CONCURRENCY < queryList.length && myRunId === useDataStore.getState().orderQueryRunId) {
-          const wait = REQUEST_DELAY + Math.floor(Math.random() * 300)
-          await new Promise(resolve => setTimeout(resolve, wait))
+        if (querySucceeded) {
+          successCount++
+          successOrderIds.push(order.id)
+        } else {
+          failCount++
+          failOrderIds.push(order.id)
+        }
+        processedCount++
+
+        if (index < queryList.length - 1 && myRunId === useDataStore.getState().orderQueryRunId) {
+          await new Promise(resolve => setTimeout(resolve, requestIntervalMs))
         }
       }
 
@@ -842,6 +853,22 @@ function OrderListPage() {
         } catch (e) {
           console.error('Update fail status error:', e)
         }
+      }
+
+      if (riskPaused) {
+        const summary = formatCountSummary([
+          { label: '成功', count: successCount },
+          { label: '失败', count: failCount }
+        ])
+        setOrderQueryProgress({
+          current: processedCount,
+          total: returnedCount,
+          message: `风控暂停：已处理 ${processedCount}/${returnedCount}（${summary}），完成验证后请重新查询`
+        })
+        toast.warning(`查券因风控暂停：${summary}，未处理订单保持待查询`)
+        invalidateCouponQueryCache({ closeDialog: true })
+        await loadOrders(ordersPage, ordersPageSize, true)
+        return
       }
 
       setOrderQueryProgress({

@@ -10,6 +10,16 @@ const {
   getPlatformConfig,
 } = require('./platformConfig.cjs')
 
+const GIFT_REQUEST_PROFILE = Object.freeze({
+  cityId: '795',
+  appVersion: '10.13.4',
+  uuid: '19b373b4485c8-6002391ccec5e4-0-0-19b373b4485c8',
+  openId: 'oJVP50DRAdtKlPFyi66xw2Uw03Is',
+  finger: '582897vz66wv5u2xy55wx99z6yz4v54280y626y3xw29797833u146v1',
+  rcfUniqueId: 'rcf49e2.49cc1e183816a.83cc0e339-adf9.f2cae2b95-84c5.8550adc46-0a59.6446ca0ec-1872.392ddd3ee-default-1775211828231',
+  rcfToken: '5cac67121c9d446c8c2d7b93'
+})
+
 // 取消标志存储
 const cancelFlags = new Map()
 
@@ -67,6 +77,25 @@ function isWindControlResponse(data) {
   return data.code === 403
     || (typeof data.msg === 'string' && data.msg.includes('风控'))
     || (typeof data.message === 'string' && data.message.includes('风控'))
+}
+
+function createYodaVerificationError(source) {
+  const data = source?.response?.data || source
+  const generalPageUrl = data?.customData?.generalPageUrl
+  if (typeof generalPageUrl !== 'string' || !generalPageUrl.trim()) return null
+
+  const error = new Error('触发美团风控验证，请完成验证后重新查询')
+  error.code = 'YODA_VERIFICATION_REQUIRED'
+  error.generalPageUrl = generalPageUrl.trim()
+  error.requestCode = data?.customData?.requestCode || ''
+  error.riskLevel = data?.customData?.riskLevel || ''
+  error.yodaCode = data?.yodaCode
+  error.status = source?.response?.status
+  return error
+}
+
+function isYodaVerificationError(error) {
+  return error?.code === 'YODA_VERIFICATION_REQUIRED'
 }
 
 function reinitOnWindControl() {
@@ -149,6 +178,22 @@ function extractGiftIdFromGiftReceiveResponse(res) {
   return ''
 }
 
+function buildLocationObject(longitude, latitude) {
+  const location = { accuracy: 0 }
+  const lng = parseFloat(longitude)
+  const lat = parseFloat(latitude)
+
+  if (Number.isFinite(lng)) {
+    location.longitude = lng
+    location.lng = lng
+  }
+  if (Number.isFinite(lat)) {
+    location.latitude = lat
+    location.lat = lat
+  }
+  return location
+}
+
 function applyLocationToPayload(payload, lat, lng) {
   if (!payload?.pageQuery || !payload?.commonParams?.location) return
   const latText = String(lat)
@@ -197,25 +242,22 @@ class MeituanAPI {
   static async resolveGiftIdFromReceivePreview({ token, giftIdEncrypt, orderId, options, uuid, finger, headers }) {
     if (!giftIdEncrypt) return ''
 
-    const latitude = options.latitude || options.lat || '41.748709'
-    const longitude = options.longitude || options.lng || '86.159215'
-    const cityId = String(options.cityId || '603')
+    const latitude = options.latitude || options.lat || ''
+    const longitude = options.longitude || options.lng || ''
+    const cityId = String(options.cityId || GIFT_REQUEST_PROFILE.cityId)
     const cfg = getPlatformConfig(options.platform)
     const userAgent = options.userAgent || cfg.userAgent
+    const openIdValue = options.openId || GIFT_REQUEST_PROFILE.openId
     const baseUrl = `https://apimobile.meituan.com/foodtrade/gift/receive/preview?duo_csdk_v=1&page_protocol_version=0001&pre_trace_id=&token=${token}&yodaReady=h5&csecplatform=4&csecversion=4.2.0`
     const commonParams = {
-      location: {
-        lat: parseFloat(latitude) || 41.748709,
-        lng: parseFloat(longitude) || 86.159215,
-        accuracy: 0
-      },
+      location: buildLocationObject(longitude, latitude),
       userInfo: {
         userId: options.userId || '',
         token,
         uuid,
-        openId: options.openId || '',
+        openId: openIdValue,
         wxUnionId: options.unionId || '',
-        uuidV2: options.openId || ''
+        uuidV2: openIdValue
       },
       cityInfo: { cityId, locCityId: cityId },
       fingerprint: { fingerprint: finger },
@@ -232,7 +274,7 @@ class MeituanAPI {
         isWeb: true,
         isWeChatMiniProgram: false,
         mpAppId: 'wxde8ac0a21135c07d',
-        mpAppVersion: '10.12.1',
+        mpAppVersion: GIFT_REQUEST_PROFILE.appVersion,
         envInWeb: {
           isWebInApp: false,
           isWebInMtApp: false,
@@ -276,8 +318,8 @@ class MeituanAPI {
         cityId,
         cityid: cityId,
         ci: cityId,
-        rcf_token: options.rcf_token || '5cac67121c9d446c8c2d7b93',
-        rcf_uniqueid: options.rcf_uniqueid || `rcf-default-${Date.now()}`,
+        rcf_token: options.rcf_token || GIFT_REQUEST_PROFILE.rcfToken,
+        rcf_uniqueid: options.rcf_uniqueid || GIFT_REQUEST_PROFILE.rcfUniqueId,
         __lxsdk_params: options.lxsdkParams || options.__lxsdk_params || '',
         _lx_ver: '3.17.5'
       },
@@ -645,6 +687,9 @@ class MeituanAPI {
         console.log('获取券码 - 响应状态:', response.status)
         printApiFullResponse('获取券码 detail preview', response)
 
+        const yodaError = createYodaVerificationError(response.data)
+        if (yodaError) throw yodaError
+
         // 打印 nodeDataMap 中的所有节点名称，帮助调试
         const nodeDataMap = response.data?.data?.nodeDataMap || {}
         const nodeNames = Object.keys(nodeDataMap)
@@ -735,6 +780,12 @@ class MeituanAPI {
       } catch (error) {
         console.error(`获取券码列表失败(尝试${retry + 1}):`, error.message, error.response?.status, error.response?.data)
         printApiErrorResponse('获取券码 detail preview', error)
+
+        if (isYodaVerificationError(error)) throw error
+
+        const yodaError = createYodaVerificationError(error)
+        if (yodaError) throw yodaError
+
         lastError = error
 
         // 如果是403错误，标记为风控
@@ -774,24 +825,11 @@ class MeituanAPI {
       options.plainGiftId,
       isProbablyGiftIdEncrypt(giftIdInput) ? '' : giftIdInput
     )
-    const baseUrl = `https://apimobile.meituan.com/foodtrade/order/api/detail/preview?duo_csdk_v=1&page_protocol_version=0001&pre_trace_id=&token=${token}&yodaReady=h5&csecplatform=4&csecversion=4.2.0`
-
-    // 构建 location 对象
-    const locationObj = { accuracy: 0 }
-    if (longitude) {
-      const lng = parseFloat(longitude)
-      locationObj.longitude = lng
-      locationObj.lng = lng
-    }
-    if (latitude) {
-      const lat = parseFloat(latitude)
-      locationObj.latitude = lat
-      locationObj.lat = lat
-    }
-
-    // 生成随机指纹
-    const finger = options.finger || `${Math.random().toString(36).substring(2, 15)}`
-    const uuidValue = uuid || `19d38fdf436c8-35cea366b6a598-0-0-${Date.now()}`
+    const baseUrl = `https://apimobile.meituan.com/foodtrade/order/api/detail/preview?duo_csdk_v=1&page_protocol_version=0001&pre_trace_id=&token=${token}&yodaReady=h5&csecplatform=4&csecversion=4.0.2`
+    const locationObj = buildLocationObject(longitude, latitude)
+    const finger = options.finger || GIFT_REQUEST_PROFILE.finger
+    const uuidValue = uuid || GIFT_REQUEST_PROFILE.uuid
+    const openIdValue = openId || GIFT_REQUEST_PROFILE.openId
     const platform = options.platform || DEFAULT_PLATFORM
     if (!options.platform) options.platform = platform
     const cfg = getPlatformConfig(platform)
@@ -803,46 +841,42 @@ class MeituanAPI {
 
     const payload = {
       pageQuery: {
-        cityId: "603",
-        locCityId: "603",
-        lat: latitude || "41.748709",
-        lng: longitude || "86.159215",
-        finger: finger,
+        cityId: GIFT_REQUEST_PROFILE.cityId,
+        locCityId: GIFT_REQUEST_PROFILE.cityId,
+        lat: latitude,
+        lng: longitude,
+        finger,
         giftId: resolvedGiftId || giftIdInput,
-        rcf_uniqueid: `rcff1d5.60cb98145e36a.acc1d6caf-6c86.24fc73c32-4209.bb9bcae89-7db1.66a67ddd2-9315.cb595a134-default-${Date.now()}`,
-        rcf_token: "5cac67121c9d446c8c2d7b93",
+        rcf_uniqueid: options.rcf_uniqueid || GIFT_REQUEST_PROFILE.rcfUniqueId,
+        rcf_token: options.rcf_token || GIFT_REQUEST_PROFILE.rcfToken,
         programName: "mt",
         mina_name: "mt-weapp",
-        openId: openId || "",
+        openId: openIdValue,
         token: token,
         userId: userId || "",
         uuid: uuidValue,
         utmMedium: "WEIXINPROGRAM",
-        appVersion: "10.12.1",
+        appVersion: GIFT_REQUEST_PROFILE.appVersion,
         envPlatform: "wx",
         platform: cfg.platform,
         uniPlatform: cfg.uniPlatform,
         utmTerm: "0",
         utmCampaign: "0",
-        app_version: "10.12.1",
+        app_version: GIFT_REQUEST_PROFILE.appVersion,
         scene: "1256",
         _lx_ver: "3.17.5"
       },
       commonParams: {
-        location: {
-          lat: parseFloat(latitude) || 41.748709,
-          lng: parseFloat(longitude) || 86.159215,
-          accuracy: 0
-        },
+        location: locationObj,
         userInfo: {
           userId: userId || "",
           token: token,
           uuid: uuidValue,
-          openId: openId || "",
+          openId: openIdValue,
           wxUnionId: "",
-          uuidV2: openId || ""
+          uuidV2: openIdValue
         },
-        cityInfo: { cityId: "603", locCityId: "603" },
+        cityInfo: { cityId: GIFT_REQUEST_PROFILE.cityId, locCityId: GIFT_REQUEST_PROFILE.cityId },
         fingerprint: { fingerprint: finger },
         systemInfo: {
           version: "",
@@ -857,7 +891,7 @@ class MeituanAPI {
           isWeb: true,
           isWeChatMiniProgram: false,
           mpAppId: "wxde8ac0a21135c07d",
-          mpAppVersion: "10.12.1",
+          mpAppVersion: GIFT_REQUEST_PROFILE.appVersion,
           envInWeb: {
             isWebInApp: false,
             isWebInMtApp: false,
@@ -877,7 +911,7 @@ class MeituanAPI {
           isDebug: false,
           userAgent: cfg.userAgent
         },
-        storage: {},
+        storage: { deliveryAddrCacheJson: "" },
         isPreview: true,
         isUpdate: false,
         isSubmit: false,
@@ -889,7 +923,7 @@ class MeituanAPI {
       payload: {},
       cacheDynamicComponent: { protocolVersion: "0001" },
       pageId: "12299",
-      pageProtocolId: "0340",
+      pageProtocolId: "0346",
       minifyHttpResponse: "1"
     }
 
@@ -936,6 +970,9 @@ class MeituanAPI {
         const response = await axios.post(signedUrl, payload, { headers, timeout: 15000 })
         console.log('获取礼物券码 - 响应状态:', response.status)
         printApiFullResponse('获取礼物券码 detail preview', response)
+
+        const yodaError = createYodaVerificationError(response.data)
+        if (yodaError) throw yodaError
 
         // 检查是否有风控错误
         if (isWindControlResponse(response.data)) {
@@ -1046,6 +1083,12 @@ class MeituanAPI {
       } catch (error) {
         console.error(`获取礼物券码列表失败(尝试${retry + 1}):`, error.message, error.response?.status)
         printApiErrorResponse('获取礼物券码 detail preview', error)
+
+        if (isYodaVerificationError(error)) throw error
+
+        const yodaError = createYodaVerificationError(error)
+        if (yodaError) throw yodaError
+
         lastError = error
 
         // 如果是403错误，标记为风控

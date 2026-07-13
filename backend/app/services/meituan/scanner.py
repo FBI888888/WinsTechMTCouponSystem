@@ -209,58 +209,45 @@ class ScheduledTaskService:
         return normalized_coupons, coupon_codes
 
     async def query_coupon_data(self, account: MTAccount, order: dict) -> tuple:
-        WC_MAX_RETRIES = 3
-        WC_WAIT_SECONDS = 10
-
         order_id, order_view_id = self._extract_order_identity(order)
         if not order_id or not order_view_id:
             return "failed", None
 
         token = get_decrypted_token(account)
 
-        for attempt in range(1, WC_MAX_RETRIES + 1):
-            try:
-                result = await self._call_meituan_api(token, order_view_id, account)
+        try:
+            result = await self._call_meituan_api(token, order_view_id, account)
 
-                if result.get("is_wind_control"):
-                    if attempt < WC_MAX_RETRIES:
-                        logger.warning(
-                            f"[风控] 订单 {order_view_id} 第{attempt}次遇到风控，"
-                            f"等待{WC_WAIT_SECONDS}秒后重试..."
-                        )
-                        await asyncio.sleep(WC_WAIT_SECONDS)
-                        continue
+            if result.get("is_wind_control"):
+                logger.warning(
+                    "[风控] 订单 %s 触发风控，立即停止当前账号查券任务",
+                    order_view_id,
+                )
+                return "wind_control", None
 
-                    logger.warning(
-                        f"[风控] 订单 {order_view_id} 连续{WC_MAX_RETRIES}次遇到风控，跳过该订单"
-                    )
-                    return "wind_control", None
+            raw_coupons = result.get("coupons", []) or []
+            normalized_coupons, coupon_codes = self._normalize_coupon_result(raw_coupons)
 
-                raw_coupons = result.get("coupons", []) or []
-                normalized_coupons, coupon_codes = self._normalize_coupon_result(raw_coupons)
-
-                return "success" if result.get("success") else "failed", {
-                    "order_id": order_id,
-                    "order_view_id": order_view_id,
-                    "order": order,
-                    "result": result,
-                    "raw_coupons": raw_coupons,
-                    "normalized_coupons": normalized_coupons,
-                    "coupon_codes": coupon_codes,
-                }
-            except Exception as exc:
-                logger.error("Query coupons error for order %s: %s", order_view_id, exc)
-                return "failed", {
-                    "order_id": order_id,
-                    "order_view_id": order_view_id,
-                    "order": order,
-                    "result": {"success": False, "error": str(exc)},
-                    "raw_coupons": [],
-                    "normalized_coupons": [],
-                    "coupon_codes": [],
-                }
-
-        return "wind_control", None
+            return "success" if result.get("success") else "failed", {
+                "order_id": order_id,
+                "order_view_id": order_view_id,
+                "order": order,
+                "result": result,
+                "raw_coupons": raw_coupons,
+                "normalized_coupons": normalized_coupons,
+                "coupon_codes": coupon_codes,
+            }
+        except Exception as exc:
+            logger.error("Query coupons error for order %s: %s", order_view_id, exc)
+            return "failed", {
+                "order_id": order_id,
+                "order_view_id": order_view_id,
+                "order": order,
+                "result": {"success": False, "error": str(exc)},
+                "raw_coupons": [],
+                "normalized_coupons": [],
+                "coupon_codes": [],
+            }
 
     def save_coupon_query_result(
         self,
@@ -397,8 +384,6 @@ class ScheduledTaskService:
         self, db: Session, account: MTAccount, orders: List[dict]
     ) -> dict:
         """单线程顺序查询并保存一组订单的券码（供手动扫描单账号使用）"""
-        consecutive_wind_control = 0
-        max_consecutive_wind_control = 3
         saved_count = 0
         scan_details = []
         is_wind_control = False
@@ -409,25 +394,18 @@ class ScheduledTaskService:
 
             if result == "success":
                 saved_count += 1
-                consecutive_wind_control = 0
                 if detail:
                     scan_details.append(detail)
             elif result == "wind_control":
-                consecutive_wind_control += 1
+                is_wind_control = True
                 logger.warning(
-                    "[scan_single] account=%s consecutive_wind_control=%s order_id=%s",
+                    "[scan_single] account=%s wind_control order_id=%s, stop immediately",
                     account.userid,
-                    consecutive_wind_control,
                     self._extract_order_identity(order)[1],
                 )
-                if consecutive_wind_control >= max_consecutive_wind_control:
-                    is_wind_control = True
-                    break
-            else:
-                consecutive_wind_control = 0
+                break
 
-            if not is_wind_control:
-                await asyncio.sleep(self.coupon_query_interval)
+            await asyncio.sleep(self.coupon_query_interval)
 
         return {
             "coupons_saved": saved_count,
@@ -621,10 +599,6 @@ class ScheduledTaskService:
         # 收集扫描详情
         scan_details = []
 
-        # 追踪连续风控次数
-        consecutive_wind_control = 0
-        MAX_CONSECUTIVE_WIND_CONTROL = 3
-
         try:
             # 1. 检查账号有效性
             is_valid = await self.check_account_validity(account)
@@ -697,10 +671,9 @@ class ScheduledTaskService:
             stats["coupons_saved"] += pipeline_result["coupons_saved"]
             scan_details.extend(pipeline_result["scan_details"])
             if pipeline_result["is_wind_control"]:
-                consecutive_wind_control = MAX_CONSECUTIVE_WIND_CONTROL
                 stats["is_wind_control"] = True
                 logger.warning(
-                    f"[扫描] 账号 {account.userid} 连续{MAX_CONSECUTIVE_WIND_CONTROL}个订单遇到风控，跳过该账号剩余订单"
+                    f"[扫描] 账号 {account.userid} 首次查券风控，已停止该账号剩余订单"
                 )
 
             # 更新账号扫描时间
@@ -859,16 +832,11 @@ class ScheduledTaskService:
             total_orders = len(interleaved)
             logger.info(f"[定时任务] Phase 2: 开始交替查询券码，共 {total_orders} 个订单")
 
-            consecutive_wc = 0
-            MAX_CONSECUTIVE_WC = 3
+            blocked_account_ids = set()
 
             for q_idx, (account, order) in enumerate(interleaved):
-                if consecutive_wc >= MAX_CONSECUTIVE_WC:
-                    logger.warning(
-                        f"[定时任务] Phase 2: 连续{MAX_CONSECUTIVE_WC}次风控，停止查询"
-                    )
-                    stats["stopped_by_wind_control"] = True
-                    break
+                if account.id in blocked_account_ids:
+                    continue
 
                 try:
                     order_view_id = self._extract_order_identity(order)[1]
@@ -881,17 +849,15 @@ class ScheduledTaskService:
 
                     if result == "success":
                         stats["coupons_saved"] += 1
-                        consecutive_wc = 0
                         if detail:
                             scan_details.append(detail)
                     elif result == "wind_control":
-                        consecutive_wc += 1
+                        blocked_account_ids.add(account.id)
+                        stats["stopped_by_wind_control"] = True
                         logger.warning(
-                            f"[定时任务] Phase 2: 账号 {account.userid} 订单 {order_view_id} 风控 "
-                            f"(连续{consecutive_wc}次)"
+                            f"[定时任务] Phase 2: 账号 {account.userid} 订单 {order_view_id} 首次风控，"
+                            f"停止该账号剩余查券任务"
                         )
-                    else:
-                        consecutive_wc = 0
 
                     # 更新账号最后扫描时间
                     account.last_check_time = datetime.now()
@@ -902,7 +868,6 @@ class ScheduledTaskService:
                         f"[定时任务] Phase 2: 账号 {account.userid} 查询订单出错: {e}"
                     )
                     stats["errors"].append({"account": account.userid, "error": str(e)})
-                    consecutive_wc = 0
 
                 # 券码间间隔（仅非最后一个）
                 if q_idx < total_orders - 1:
@@ -916,7 +881,7 @@ class ScheduledTaskService:
             task_log.finished_at = datetime.now()
             task_log.duration_seconds = int((task_log.finished_at - task_log.started_at).total_seconds())
             if stats["stopped_by_wind_control"]:
-                task_log.error_message = f"因连续风控停止"
+                task_log.error_message = "部分账号因风控停止后续查券"
             if scan_details:
                 task_log.scan_details = json.dumps(scan_details, ensure_ascii=False)
             db.commit()

@@ -12,8 +12,17 @@ const {
   DEFAULT_COOKIES,
   DEFAULT_PLATFORM,
   getPlatformConfig,
-  serializeCookies,
 } = require('./platformConfig.cjs')
+
+const GIFT_REQUEST_PROFILE = Object.freeze({
+  cityId: '795',
+  appVersion: '10.13.4',
+  uuid: '19b373b4485c8-6002391ccec5e4-0-0-19b373b4485c8',
+  openId: 'oJVP50DRAdtKlPFyi66xw2Uw03Is',
+  finger: '582897vz66wv5u2xy55wx99z6yz4v54280y626y3xw29797833u146v1',
+  rcfUniqueId: 'rcf49e2.49cc1e183816a.83cc0e339-adf9.f2cae2b95-84c5.8550adc46-0a59.6446ca0ec-1872.392ddd3ee-default-1775211828231',
+  rcfToken: '5cac67121c9d446c8c2d7b93'
+})
 
 const BACKEND_API_DEBUG = process.env.MEITUAN_BACKEND_DEBUG === '1'
 
@@ -59,6 +68,35 @@ function isWindControlResponse(data) {
   return data.code === 403
     || (typeof data.msg === 'string' && data.msg.includes('风控'))
     || (typeof data.message === 'string' && data.message.includes('风控'))
+}
+
+function getYodaVerificationDetails(source) {
+  const data = source?.response?.data || source
+  const generalPageUrl = data?.customData?.generalPageUrl
+  if (typeof generalPageUrl !== 'string' || !generalPageUrl.trim()) return null
+
+  return {
+    code: 'YODA_VERIFICATION_REQUIRED',
+    message: '触发美团风控验证，请完成验证后重新查询',
+    generalPageUrl: generalPageUrl.trim(),
+    requestCode: data?.customData?.requestCode || '',
+    riskLevel: data?.customData?.riskLevel || '',
+    yodaCode: data?.yodaCode,
+    status: source?.response?.status
+  }
+}
+
+function createYodaWindControlResult(source) {
+  const details = getYodaVerificationDetails(source)
+  if (!details) return null
+
+  return {
+    success: false,
+    error: details.message,
+    isWindControl: true,
+    riskControl: details,
+    coupons: []
+  }
 }
 
 function reinitOnWindControl() {
@@ -231,22 +269,18 @@ function extractShopLocation(res) {
 function buildCommonParams({ token, uuid, finger, userId, openId, unionId, cityId, latitude, longitude, platform }) {
   const cfg = getPlatformConfig(platform)
   return {
-    location: {
-      lat: parseFloat(latitude) || 41.748709,
-      lng: parseFloat(longitude) || 86.159215,
-      accuracy: 0
-    },
+    location: buildLocationObject(longitude, latitude),
     userInfo: {
       userId: userId || '',
       token,
       uuid,
-      openId: openId || '',
+      openId: openId || GIFT_REQUEST_PROFILE.openId,
       wxUnionId: unionId || '',
-      uuidV2: openId || ''
+      uuidV2: openId || GIFT_REQUEST_PROFILE.openId
     },
     cityInfo: {
-      cityId: cityId || '603',
-      locCityId: cityId || '603'
+      cityId: cityId || GIFT_REQUEST_PROFILE.cityId,
+      locCityId: cityId || GIFT_REQUEST_PROFILE.cityId
     },
     fingerprint: {
       fingerprint: finger
@@ -264,7 +298,7 @@ function buildCommonParams({ token, uuid, finger, userId, openId, unionId, cityI
       isWeb: true,
       isWeChatMiniProgram: false,
       mpAppId: 'wxde8ac0a21135c07d',
-      mpAppVersion: '10.12.1',
+      mpAppVersion: GIFT_REQUEST_PROFILE.appVersion,
       envInWeb: {
         isWebInApp: false,
         isWebInMtApp: false,
@@ -295,9 +329,9 @@ function buildCommonParams({ token, uuid, finger, userId, openId, unionId, cityI
 async function resolveGiftIdFromReceivePreview({ token, giftIdEncrypt, orderId, options, uuid, finger, headers }) {
   if (!giftIdEncrypt) return ''
 
-  const latitude = options.latitude || options.lat || '41.748709'
-  const longitude = options.longitude || options.lng || '86.159215'
-  const cityId = String(options.cityId || '603')
+  const latitude = options.latitude || options.lat || ''
+  const longitude = options.longitude || options.lng || ''
+  const cityId = String(options.cityId || GIFT_REQUEST_PROFILE.cityId)
   const baseUrl = `https://apimobile.meituan.com/foodtrade/gift/receive/preview?duo_csdk_v=1&page_protocol_version=0001&pre_trace_id=&token=${token}&yodaReady=h5&csecplatform=4&csecversion=4.2.0`
   const commonParams = buildCommonParams({
     token,
@@ -329,8 +363,8 @@ async function resolveGiftIdFromReceivePreview({ token, giftIdEncrypt, orderId, 
       cityId,
       cityid: cityId,
       ci: cityId,
-      rcf_token: options.rcf_token || '5cac67121c9d446c8c2d7b93',
-      rcf_uniqueid: options.rcf_uniqueid || `rcf-default-${Date.now()}`,
+      rcf_token: options.rcf_token || GIFT_REQUEST_PROFILE.rcfToken,
+      rcf_uniqueid: options.rcf_uniqueid || GIFT_REQUEST_PROFILE.rcfUniqueId,
       __lxsdk_params: options.lxsdkParams || options.__lxsdk_params || '',
       _lx_ver: '3.17.5'
     },
@@ -497,6 +531,9 @@ async function getNormalCouponList(token, orderIdStr, options = {}) {
         debugLog(JSON.stringify(response.data, null, 2))
         debugLog(`=============================\n`)
 
+        const yodaResult = createYodaWindControlResult(response.data)
+        if (yodaResult) return yodaResult
+
         if (isWindControlResponse(response.data)) {
           lastError = new Error('WIND_CONTROL')
           reinitOnWindControl()
@@ -568,6 +605,9 @@ async function getNormalCouponList(token, orderIdStr, options = {}) {
           shopLocation: extractedShopLocation,
         }
       } catch (error) {
+        const yodaResult = createYodaWindControlResult(error)
+        if (yodaResult) return yodaResult
+
         lastError = error
         if (error.response?.status === 403 || error.response?.status === 418) {
           lastError = new Error('WIND_CONTROL')
@@ -589,6 +629,9 @@ async function getNormalCouponList(token, orderIdStr, options = {}) {
     }
   } catch (error) {
     console.error('[Backend API] Error:', error.message)
+    const yodaResult = createYodaWindControlResult(error)
+    if (yodaResult) return yodaResult
+
     const isWindControl = error.response?.status === 418
       || error.response?.status === 403
       || String(error.message).includes('418')
@@ -617,14 +660,11 @@ async function getGiftCouponList(token, giftId, options = {}) {
 
   const platform = options.platform || DEFAULT_PLATFORM
   const cfg = getPlatformConfig(platform)
-  const baseUrl = `https://apimobile.meituan.com/foodtrade/order/api/detail/preview?duo_csdk_v=1&page_protocol_version=0001&pre_trace_id=&token=${token}&yodaReady=h5&csecplatform=4&csecversion=4.2.0`
+  const baseUrl = `https://apimobile.meituan.com/foodtrade/order/api/detail/preview?duo_csdk_v=1&page_protocol_version=0001&pre_trace_id=&token=${token}&yodaReady=h5&csecplatform=4&csecversion=4.0.2`
 
-  const generateUuid = () => {
-    const hex = () => Math.floor(Math.random() * 16777216).toString(16).padStart(6, '0')
-    return `${hex()}${hex()}-${hex()}-${hex()}-${hex()}-${hex()}${hex()}${hex()}`
-  }
-  const uuid = options.uuid || generateUuid()
-  const finger = options.finger || `${Math.random().toString(36).substring(2, 15)}`
+  const uuid = options.uuid || GIFT_REQUEST_PROFILE.uuid
+  const finger = options.finger || GIFT_REQUEST_PROFILE.finger
+  const openId = options.openId || GIFT_REQUEST_PROFILE.openId
 
   debugLog(
     `[Backend API] getGiftCouponList giftId=${resolvedGiftId || giftIdInput}, platform=${platform}`
@@ -632,22 +672,22 @@ async function getGiftCouponList(token, giftId, options = {}) {
 
   const payload = {
     pageQuery: {
-      cityId: options.cityId || '603',
-      locCityId: options.cityId || '603',
-      lat: options.latitude || '41.748709',
-      lng: options.longitude || '86.159215',
+      cityId: options.cityId || GIFT_REQUEST_PROFILE.cityId,
+      locCityId: options.cityId || GIFT_REQUEST_PROFILE.cityId,
+      lat: options.latitude,
+      lng: options.longitude,
       finger,
       giftId: resolvedGiftId || undefined,
-      rcf_uniqueid: `rcff1d5.60cb98145e36a.acc1d6caf-6c86.24fc73c32-4209.bb9bcae89-7db1.66a67ddd2-9315.cb595a134-default-${Date.now()}`,
-      rcf_token: '5cac67121c9d446c8c2d7b93',
+      rcf_uniqueid: options.rcf_uniqueid || GIFT_REQUEST_PROFILE.rcfUniqueId,
+      rcf_token: options.rcf_token || GIFT_REQUEST_PROFILE.rcfToken,
       programName: 'mt',
       mina_name: 'mt-weapp',
-      openId: options.openId || '',
+      openId,
       token,
       userId: options.userId || '',
       uuid,
       utmMedium: 'WEIXINPROGRAM',
-      appVersion: '10.12.1',
+      appVersion: GIFT_REQUEST_PROFILE.appVersion,
       envPlatform: 'wx',
       platform: cfg.platform,
       uniPlatform: cfg.uniPlatform,
@@ -655,7 +695,7 @@ async function getGiftCouponList(token, giftId, options = {}) {
       utmTerm: '0',
       utmCampaign: '0',
       unionId: options.unionId || '',
-      app_version: '10.12.1',
+      app_version: GIFT_REQUEST_PROFILE.appVersion,
       scene: '1256',
       __lxsdk_params: options.lxsdkParams || '',
       _lx_tag: options.lxTag || '',
@@ -666,9 +706,9 @@ async function getGiftCouponList(token, giftId, options = {}) {
       uuid,
       finger,
       userId: options.userId,
-      openId: options.openId,
+      openId,
       unionId: options.unionId,
-      cityId: options.cityId,
+      cityId: options.cityId || GIFT_REQUEST_PROFILE.cityId,
       latitude: options.latitude,
       longitude: options.longitude,
       platform,
@@ -679,9 +719,10 @@ async function getGiftCouponList(token, giftId, options = {}) {
     payload: {},
     cacheDynamicComponent: { protocolVersion: '0001' },
     pageId: '12299',
-    pageProtocolId: '0340',
+    pageProtocolId: '0346',
     minifyHttpResponse: '1',
   }
+  payload.commonParams.storage = { deliveryAddrCacheJson: '' }
 
   const headers = {
     Host: 'apimobile.meituan.com',
@@ -694,7 +735,6 @@ async function getGiftCouponList(token, giftId, options = {}) {
     'Sec-Fetch-Dest': 'empty',
     Referer: 'https://awp.meituan.com/',
     'Accept-Language': 'zh-CN,zh;q=0.9',
-    Cookie: options.cookie || serializeCookies(DEFAULT_COOKIES),
     'Content-Type': 'application/json',
   }
 
@@ -732,6 +772,9 @@ async function getGiftCouponList(token, giftId, options = {}) {
         debugLog(`\n====== 美团礼物接口原始响应 ======`)
         debugLog(JSON.stringify(response.data, null, 2))
         debugLog(`=============================\n`)
+
+        const yodaResult = createYodaWindControlResult(response.data)
+        if (yodaResult) return yodaResult
 
         if (isWindControlResponse(response.data)) {
           lastError = new Error('WIND_CONTROL')
@@ -817,6 +860,9 @@ async function getGiftCouponList(token, giftId, options = {}) {
           shopLocation: extractedShopLocation,
         }
       } catch (error) {
+        const yodaResult = createYodaWindControlResult(error)
+        if (yodaResult) return yodaResult
+
         lastError = error
         if (error.response?.status === 403 || error.response?.status === 418) {
           lastError = new Error('WIND_CONTROL')
@@ -838,6 +884,9 @@ async function getGiftCouponList(token, giftId, options = {}) {
     }
   } catch (error) {
     console.error('[Backend API] Gift Error:', error.message)
+    const yodaResult = createYodaWindControlResult(error)
+    if (yodaResult) return yodaResult
+
     const isWindControl = error.response?.status === 418
       || error.response?.status === 403
       || String(error.message).includes('418')

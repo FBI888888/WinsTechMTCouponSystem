@@ -14,6 +14,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Rebate query (券码查询)
   rebateQueryOne: (params) => ipcRenderer.invoke('rebate-query-one', params),
+  openYodaVerification: (generalPageUrl) => ipcRenderer.invoke('open-yoda-verification', generalPageUrl),
+  onYodaVerificationRequired: (callback) => ipcRenderer.on('yoda-verification-required', callback),
+  offYodaVerificationRequired: (callback) => ipcRenderer.removeListener('yoda-verification-required', callback),
   // 别名，与功能参考项目保持一致
   apiGetCoupons: (params) => ipcRenderer.invoke('rebate-query-one', { account: { token: params.token }, orderId: params.orderid }),
 
