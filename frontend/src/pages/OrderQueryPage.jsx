@@ -74,10 +74,6 @@ function OrderQueryPage() {
       toast.warning('请输入订单号')
       return
     }
-    if (!selectedAccount?.open_id) {
-      toast.warning('该账号缺少必要信息(openId)，请先在账号管理中重新抓取')
-      return
-    }
 
     setLoading(true)
     resetResult()
@@ -88,8 +84,8 @@ function OrderQueryPage() {
           userid: selectedAccount.userid,
           token: selectedAccount.token,
           csecuuid: selectedAccount.csecuuid || '',
-          openId: selectedAccount.open_id,
-          openIdCipher: selectedAccount.open_id_cipher,
+          openId: selectedAccount.open_id || '',
+          openIdCipher: selectedAccount.open_id_cipher || '',
           platform: selectedAccount.platform || 'android'
         },
         orderId: orderId.trim()
@@ -305,10 +301,6 @@ function OrderQueryPage() {
       toast.warning('请输入订单号')
       return
     }
-    if (!selectedAccount?.open_id || !selectedAccount?.open_id_cipher) {
-      toast.warning('当前账号缺少必要信息(openId)，请先在账号管理中重新抓取')
-      return
-    }
 
     setCouponDialogLoading(true)
     setCouponDialogResult(null)
@@ -323,8 +315,8 @@ function OrderQueryPage() {
           userid: selectedAccount.userid,
           token: selectedAccount.token,
           csecuuid: selectedAccount.csecuuid || '',
-          openId: selectedAccount.open_id,
-          openIdCipher: selectedAccount.open_id_cipher,
+          openId: selectedAccount.open_id || '',
+          openIdCipher: selectedAccount.open_id_cipher || '',
           platform: selectedAccount.platform || 'android'
         },
         orderId: orderId.trim()
