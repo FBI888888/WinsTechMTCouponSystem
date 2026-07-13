@@ -1,6 +1,6 @@
 {
   "name": "mt-coupon-frontend",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "private": true,
   "main": "electron/main.cjs",
   "type": "module",
@@ -41,7 +41,7 @@
     "appId": "com.winstech.mtcoupon",
     "productName": "WinsTechMT Coupon System",
     "directories": {
-      "output": "dist-electron-v1.4.0-build"
+      "output": "dist-electron-v1.5.0-build"
     },
     "files": [
       "dist/**/*",

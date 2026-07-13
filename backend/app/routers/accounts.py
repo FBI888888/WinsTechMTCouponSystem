@@ -12,7 +12,7 @@ from app.models.log import OperationLog
 from app.schemas.account import (
     AccountCreate, AccountUpdate, AccountResponse,
     AccountCaptureRequest, AccountCheckRequest, AccountCheckResponse,
-    AccountCooldownRequest,
+    AccountCooldownRequest, AccountClearCooldownRequest, GiftType,
 )
 from app.deps import get_current_user
 from app.utils.encryption import encrypt_token, decrypt_token
@@ -35,6 +35,49 @@ def _encrypt_account_token(token: str) -> str:
 def _decrypt_account_token(encrypted_token: str) -> str:
     """解密账号Token"""
     return decrypt_token(encrypted_token)
+
+
+def _normalize_gift_type(value: Optional[str]) -> str:
+    key = str(value or "meituan").strip().lower()
+    if key not in ("meituan", "live"):
+        raise HTTPException(status_code=400, detail="gift_type 必须是 meituan 或 live")
+    return key
+
+
+def _cooldown_column(gift_type: str):
+    return (
+        MTAccount.cooldown_until_meituan
+        if gift_type == "meituan"
+        else MTAccount.cooldown_until_live
+    )
+
+
+def _last_claim_column(gift_type: str):
+    return (
+        MTAccount.last_claim_at_meituan
+        if gift_type == "meituan"
+        else MTAccount.last_claim_at_live
+    )
+
+
+def _set_account_cooldown(account: MTAccount, gift_type: str, until: datetime, limit_at: datetime):
+    if gift_type == "live":
+        account.cooldown_until_live = until
+        account.last_limit_at_live = limit_at
+    else:
+        account.cooldown_until_meituan = until
+        account.last_limit_at_meituan = limit_at
+        # 兼容旧字段：与美团冷却保持同步
+        account.cooldown_until = until
+        account.last_limit_at = limit_at
+
+
+def _clear_account_cooldown(account: MTAccount, gift_type: Optional[str]):
+    if gift_type is None or gift_type == "meituan":
+        account.cooldown_until_meituan = None
+        account.cooldown_until = None
+    if gift_type is None or gift_type == "live":
+        account.cooldown_until_live = None
 
 
 @router.get("", response_model=List[AccountResponse])
@@ -186,22 +229,26 @@ def capture_account(
 @router.get("/available-for-gift", response_model=List[AccountResponse])
 def get_available_accounts_for_gift(
     limit: int = Query(100, ge=1, le=500),
+    gift_type: GiftType = Query("meituan"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """返回可用于礼物领取的账号：启用、非失效、冷却已过期或未冷却。"""
+    """返回可用于指定类型礼物领取的账号：启用、非失效、对应类型冷却已过期或未冷却。"""
+    gift_type = _normalize_gift_type(gift_type)
     now = datetime.now()
+    cooldown_col = _cooldown_column(gift_type)
+    claim_col = _last_claim_column(gift_type)
     accounts = (
         db.query(MTAccount)
         .filter(
             MTAccount.disabled == 0,
             MTAccount.status != AccountStatus.INVALID,
             or_(
-                MTAccount.cooldown_until.is_(None),
-                MTAccount.cooldown_until <= now,
+                cooldown_col.is_(None),
+                cooldown_col <= now,
             ),
         )
-        .order_by(MTAccount.last_claim_at.is_(None).desc(), MTAccount.last_claim_at.asc(), MTAccount.id.asc())
+        .order_by(claim_col.is_(None).desc(), claim_col.asc(), MTAccount.id.asc())
         .limit(limit)
         .all()
     )
@@ -461,15 +508,15 @@ def mark_account_cooldown(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """标记账号进入礼物领取冷却（通常因 result=1011）。"""
+    """标记账号进入指定类型礼物领取冷却（通常因 result=1011）。"""
     account = db.query(MTAccount).filter(MTAccount.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="账号不存在")
 
+    gift_type = _normalize_gift_type(request.gift_type)
     hours = request.hours if request.hours and request.hours > 0 else 12
     now = datetime.now()
-    account.cooldown_until = now + timedelta(hours=hours)
-    account.last_limit_at = now
+    _set_account_cooldown(account, gift_type, now + timedelta(hours=hours), now)
     db.commit()
     db.refresh(account)
 
@@ -478,7 +525,10 @@ def mark_account_cooldown(
         action="mark_account_cooldown",
         target_type="account",
         target_id=account.id,
-        details=f"冷却{hours}小时 reason={request.reason or ''}: {account.remark or account.userid}"
+        details=(
+            f"冷却{hours}小时 gift_type={gift_type} reason={request.reason or ''}:"
+            f" {account.remark or account.userid}"
+        )
     )
     db.add(log)
     db.commit()
@@ -490,24 +540,29 @@ def mark_account_cooldown(
 @router.post("/{account_id}/clear-cooldown", response_model=AccountResponse)
 def clear_account_cooldown(
     account_id: int,
+    request: AccountClearCooldownRequest = AccountClearCooldownRequest(),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """手动清除账号礼物领取冷却。"""
+    """手动清除账号礼物领取冷却；未指定 gift_type 时清除两类。"""
     account = db.query(MTAccount).filter(MTAccount.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="账号不存在")
 
-    account.cooldown_until = None
+    gift_type = None
+    if request.gift_type is not None:
+        gift_type = _normalize_gift_type(request.gift_type)
+    _clear_account_cooldown(account, gift_type)
     db.commit()
     db.refresh(account)
 
+    type_label = gift_type or "meituan+live"
     log = OperationLog(
         user_id=current_user.id,
         action="clear_account_cooldown",
         target_type="account",
         target_id=account.id,
-        details=f"清除冷却: {account.remark or account.userid}"
+        details=f"清除冷却 gift_type={type_label}: {account.remark or account.userid}"
     )
     db.add(log)
     db.commit()

@@ -40,9 +40,15 @@ CREATE TABLE IF NOT EXISTS `mt_accounts` (
     `disabled` INT NOT NULL DEFAULT 0 COMMENT '是否禁用: 0=启用, 1=禁用',
     `last_check_time` DATETIME DEFAULT NULL COMMENT '最后检测时间',
     `last_scan_time` DATETIME DEFAULT NULL COMMENT '最后扫描时间',
-    `cooldown_until` DATETIME DEFAULT NULL COMMENT '礼物领取冷却截止时间',
-    `last_claim_at` DATETIME DEFAULT NULL COMMENT '最近领取成功时间',
-    `last_limit_at` DATETIME DEFAULT NULL COMMENT '最近收礼上限(1011)时间',
+    `cooldown_until` DATETIME DEFAULT NULL COMMENT '兼容旧字段（同步美团冷却）',
+    `last_claim_at` DATETIME DEFAULT NULL COMMENT '兼容旧字段（同步美团领取）',
+    `last_limit_at` DATETIME DEFAULT NULL COMMENT '兼容旧字段（同步美团达限）',
+    `cooldown_until_meituan` DATETIME DEFAULT NULL COMMENT '美团礼物冷却截止',
+    `cooldown_until_live` DATETIME DEFAULT NULL COMMENT '直播礼物冷却截止',
+    `last_claim_at_meituan` DATETIME DEFAULT NULL COMMENT '最近美团礼物领取',
+    `last_claim_at_live` DATETIME DEFAULT NULL COMMENT '最近直播礼物领取',
+    `last_limit_at_meituan` DATETIME DEFAULT NULL COMMENT '最近美团达限时间',
+    `last_limit_at_live` DATETIME DEFAULT NULL COMMENT '最近直播达限时间',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
@@ -52,6 +58,8 @@ CREATE TABLE IF NOT EXISTS `mt_accounts` (
     INDEX `idx_status` (`status`),
     INDEX `idx_disabled` (`disabled`),
     INDEX `idx_cooldown_until` (`cooldown_until`),
+    INDEX `idx_cooldown_until_meituan` (`cooldown_until_meituan`),
+    INDEX `idx_cooldown_until_live` (`cooldown_until_live`),
     FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='美团账号表';
 

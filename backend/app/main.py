@@ -278,7 +278,7 @@ app.include_router(stats.router)
 
 @app.get("/")
 def root():
-    return {"message": "MT Coupon System API", "version": "1.3.0"}
+    return {"message": "MT Coupon System API", "version": "1.5.0"}
 
 
 @app.get("/health")

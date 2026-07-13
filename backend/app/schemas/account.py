@@ -1,6 +1,9 @@
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Literal
+
+
+GiftType = Literal["meituan", "live"]
 
 
 class AccountBase(BaseModel):
@@ -42,6 +45,12 @@ class AccountResponse(AccountBase):
     cooldown_until: Optional[datetime] = None
     last_claim_at: Optional[datetime] = None
     last_limit_at: Optional[datetime] = None
+    cooldown_until_meituan: Optional[datetime] = None
+    cooldown_until_live: Optional[datetime] = None
+    last_claim_at_meituan: Optional[datetime] = None
+    last_claim_at_live: Optional[datetime] = None
+    last_limit_at_meituan: Optional[datetime] = None
+    last_limit_at_live: Optional[datetime] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -73,6 +82,12 @@ class AccountCheckResponse(BaseModel):
 class AccountCooldownRequest(BaseModel):
     hours: float = 12
     reason: Optional[str] = "1011"
+    gift_type: GiftType = "meituan"
+
+
+class AccountClearCooldownRequest(BaseModel):
+    """gift_type 缺省时清除美团与直播两类冷却。"""
+    gift_type: Optional[GiftType] = None
 
 
 class GiftClaimSaveRequest(BaseModel):
@@ -86,6 +101,7 @@ class GiftClaimSaveRequest(BaseModel):
     title: Optional[str] = None
     raw_data: Optional[dict] = None
     data_source: str = "wxbot_gift_submit"
+    gift_type: GiftType = "meituan"
 
 
 class ClaimRecordItem(BaseModel):

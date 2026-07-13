@@ -744,7 +744,14 @@ def save_gift_claim(
 
     order_key = (request.order_id or gift_id).strip()
     data_source = (request.data_source or "wxbot_gift_submit").strip() or "wxbot_gift_submit"
+    gift_type = str(request.gift_type or "meituan").strip().lower()
+    if gift_type not in ("meituan", "live"):
+        raise HTTPException(status_code=400, detail="gift_type 必须是 meituan 或 live")
     now = datetime.now()
+
+    # 将 gift_type 写入 raw_data，便于领取记录追溯
+    raw_data = dict(request.raw_data or {})
+    raw_data.setdefault("gift_type", gift_type)
 
     order = db.query(Order).filter(
         Order.account_id == request.account_id,
@@ -787,7 +794,7 @@ def save_gift_claim(
         existing.coupon_status = request.coupon_status or existing.coupon_status
         existing.use_status = request.use_status if request.use_status is not None else existing.use_status
         existing.gift_id = gift_id
-        existing.raw_data = request.raw_data if request.raw_data is not None else existing.raw_data
+        existing.raw_data = raw_data
         existing.data_source = data_source
         existing.query_time = now
         existing.updated_at = now
@@ -801,13 +808,17 @@ def save_gift_claim(
             coupon_status=request.coupon_status,
             use_status=request.use_status,
             gift_id=gift_id,
-            raw_data=request.raw_data,
+            raw_data=raw_data,
             data_source=data_source,
             query_time=now,
         )
         db.add(coupon)
 
-    account.last_claim_at = now
+    if gift_type == "live":
+        account.last_claim_at_live = now
+    else:
+        account.last_claim_at_meituan = now
+        account.last_claim_at = now
     db.commit()
     invalidate_order_list_count_cache()
     invalidate_dashboard_stats_cache()
@@ -820,6 +831,7 @@ def save_gift_claim(
         "gift_id": gift_id,
         "coupon_code": coupon_code,
         "account_id": request.account_id,
+        "gift_type": gift_type,
     }
 
 

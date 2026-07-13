@@ -28,9 +28,15 @@ class MTAccount(Base):
     disabled = Column(Integer, default=0, index=True)  # 0=启用, 1=禁用
     last_check_time = Column(DateTime)
     last_scan_time = Column(DateTime)  # 最后扫描时间
-    cooldown_until = Column(DateTime, nullable=True, index=True)  # 礼物领取冷却截止
-    last_claim_at = Column(DateTime, nullable=True)  # 最近领取成功时间
-    last_limit_at = Column(DateTime, nullable=True)  # 最近收礼上限(1011)时间
+    cooldown_until = Column(DateTime, nullable=True, index=True)  # 兼容旧字段（同步 meituan）
+    last_claim_at = Column(DateTime, nullable=True)  # 兼容旧字段（同步 meituan）
+    last_limit_at = Column(DateTime, nullable=True)  # 兼容旧字段（同步 meituan）
+    cooldown_until_meituan = Column(DateTime, nullable=True, index=True)  # 美团礼物冷却截止
+    cooldown_until_live = Column(DateTime, nullable=True, index=True)  # 直播礼物冷却截止
+    last_claim_at_meituan = Column(DateTime, nullable=True)  # 最近美团礼物领取
+    last_claim_at_live = Column(DateTime, nullable=True)  # 最近直播礼物领取
+    last_limit_at_meituan = Column(DateTime, nullable=True)  # 最近美团达限时间
+    last_limit_at_live = Column(DateTime, nullable=True)  # 最近直播达限时间
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
