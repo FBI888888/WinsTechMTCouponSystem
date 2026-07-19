@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS `mt_accounts` (
     `last_claim_at_live` DATETIME DEFAULT NULL COMMENT '最近直播礼物领取',
     `last_limit_at_meituan` DATETIME DEFAULT NULL COMMENT '最近美团达限时间',
     `last_limit_at_live` DATETIME DEFAULT NULL COMMENT '最近直播达限时间',
+    `meituan_claim_count` INT NOT NULL DEFAULT 0 COMMENT '美团礼物领取次数',
+    `live_claim_count` INT NOT NULL DEFAULT 0 COMMENT '直播礼物领取次数',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),

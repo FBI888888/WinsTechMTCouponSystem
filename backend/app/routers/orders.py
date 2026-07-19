@@ -789,6 +789,7 @@ def save_gift_claim(
         Coupon.order_id == order.id,
         Coupon.coupon_code == coupon_code,
     ).first()
+    is_new_claim = existing is None
     if existing:
         existing.encode = request.encode or existing.encode
         existing.coupon_status = request.coupon_status or existing.coupon_status
@@ -816,9 +817,19 @@ def save_gift_claim(
 
     if gift_type == "live":
         account.last_claim_at_live = now
+        if is_new_claim:
+            db.query(MTAccount).filter(MTAccount.id == request.account_id).update(
+                {MTAccount.live_claim_count: MTAccount.live_claim_count + 1},
+                synchronize_session=False,
+            )
     else:
         account.last_claim_at_meituan = now
         account.last_claim_at = now
+        if is_new_claim:
+            db.query(MTAccount).filter(MTAccount.id == request.account_id).update(
+                {MTAccount.meituan_claim_count: MTAccount.meituan_claim_count + 1},
+                synchronize_session=False,
+            )
     db.commit()
     invalidate_order_list_count_cache()
     invalidate_dashboard_stats_cache()

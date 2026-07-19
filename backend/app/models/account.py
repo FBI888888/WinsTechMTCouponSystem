@@ -37,6 +37,8 @@ class MTAccount(Base):
     last_claim_at_live = Column(DateTime, nullable=True)  # 最近直播礼物领取
     last_limit_at_meituan = Column(DateTime, nullable=True)  # 最近美团达限时间
     last_limit_at_live = Column(DateTime, nullable=True)  # 最近直播达限时间
+    meituan_claim_count = Column(Integer, nullable=False, default=0)  # 美团礼物领取次数
+    live_claim_count = Column(Integer, nullable=False, default=0)  # 直播礼物领取次数
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
