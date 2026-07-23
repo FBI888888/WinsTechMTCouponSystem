@@ -18,13 +18,14 @@ function OrderQueryPage() {
     accounts,
     accountsLoaded,
     fetchAccounts,
+    orderQuerySelectedAccountId,
     orderQueryOrderId,
     orderQueryResult,
     setOrderQueryPageData
   } = useDataStore()
   const toast = useToastStore()
 
-  const [selectedAccountId, setSelectedAccountId] = useState('')
+  const [selectedAccountId, setSelectedAccountId] = useState(orderQuerySelectedAccountId || '')
   const [orderId, setOrderId] = useState(orderQueryOrderId || '')
   const [loading, setLoading] = useState(false)
   const [backendLoading, setBackendLoading] = useState(false)
@@ -54,22 +55,46 @@ function OrderQueryPage() {
     }
   }, [])
 
-  const selectedAccount = accounts.find(account => account.id === parseInt(selectedAccountId, 10))
-
   const resetResult = () => {
     setResult(null)
   }
 
-  const buildQueryMeta = () => ({
+  const buildQueryMeta = (accountId = selectedAccountId) => ({
     queryOrderId: orderId.trim(),
-    accountId: selectedAccountId
+    accountId: String(accountId || '')
   })
 
-  const handleQuery = async () => {
-    if (!selectedAccountId) {
-      toast.warning('请先选择账号')
-      return
+  const resolveQueryAccount = async () => {
+    let resolvedAccountId = String(selectedAccountId || '')
+
+    if (!resolvedAccountId) {
+      const response = await ordersApi.resolveAccount(orderId.trim())
+      if (!response.data?.success || !response.data?.account_id) {
+        toast.warning(response.data?.message || '数据库中不存在此订单，请选择账号后查询')
+        return null
+      }
+      resolvedAccountId = String(response.data.account_id)
+      setSelectedAccountId(resolvedAccountId)
     }
+
+    let account = accounts.find(item => item.id === parseInt(resolvedAccountId, 10))
+    if (!account) {
+      const response = await accountsApi.get(parseInt(resolvedAccountId, 10))
+      account = response.data
+    }
+
+    if (!account) {
+      toast.error('订单所属账号不存在或已被删除')
+      return null
+    }
+
+    return {
+      account,
+      accountId: parseInt(resolvedAccountId, 10)
+    }
+  }
+
+  const handleQuery = async () => {
     if (!orderId.trim()) {
       toast.warning('请输入订单号')
       return
@@ -79,14 +104,18 @@ function OrderQueryPage() {
     resetResult()
 
     try {
+      const resolved = await resolveQueryAccount()
+      if (!resolved) return
+      const { account, accountId } = resolved
+
       const meituanResult = await window.electronAPI.rebateQueryOne({
         account: {
-          userid: selectedAccount.userid,
-          token: selectedAccount.token,
-          csecuuid: selectedAccount.csecuuid || '',
-          openId: selectedAccount.open_id || '',
-          openIdCipher: selectedAccount.open_id_cipher || '',
-          platform: selectedAccount.platform || 'android'
+          userid: account.userid,
+          token: account.token,
+          csecuuid: account.csecuuid || '',
+          openId: account.open_id || '',
+          openIdCipher: account.open_id_cipher || '',
+          platform: account.platform || 'android'
         },
         orderId: orderId.trim()
       })
@@ -99,7 +128,7 @@ function OrderQueryPage() {
           message: coupons.length > 0
             ? `查询成功，获取到 ${coupons.length} 个券码`
             : '未查询到券码信息',
-          meta: buildQueryMeta()
+          meta: buildQueryMeta(accountId)
         })
         setResult(queryResult)
 
@@ -115,14 +144,14 @@ function OrderQueryPage() {
                 title: coupons[0]?.title || ''
               }
               const saveResponse = await ordersApi.saveBatch({
-                account_id: parseInt(selectedAccountId, 10),
+                account_id: accountId,
                 orders: [orderData]
               })
               const savedOrderId = saveResponse.data?.order_ids?.[0] || null
 
               for (const couponInfo of coupons) {
                 await ordersApi.saveCoupon({
-                  account_id: parseInt(selectedAccountId, 10),
+                  account_id: accountId,
                   order_id: savedOrderId,
                   order_view_id: orderId.trim(),
                   coupon_data: couponInfo,
@@ -155,10 +184,6 @@ function OrderQueryPage() {
   }
 
   const handleBackendQuery = async () => {
-    if (!selectedAccountId) {
-      toast.warning('请先选择账号')
-      return
-    }
     if (!orderId.trim()) {
       toast.warning('请输入订单号')
       return
@@ -168,8 +193,12 @@ function OrderQueryPage() {
     resetResult()
 
     try {
+      const resolved = await resolveQueryAccount()
+      if (!resolved) return
+      const { accountId } = resolved
+
       const response = await ordersApi.queryOrderByOrderId({
-        account_id: parseInt(selectedAccountId, 10),
+        account_id: accountId,
         order_id: orderId.trim()
       })
 
@@ -180,7 +209,7 @@ function OrderQueryPage() {
           coupons,
           message: response.data.message || `查询成功，获取到 ${coupons.length} 个券码`,
           saved: Boolean(response.data.saved),
-          meta: buildQueryMeta()
+          meta: buildQueryMeta(accountId)
         }))
       } else {
         setResult(createErrorQueryResult({
@@ -208,6 +237,12 @@ function OrderQueryPage() {
     }
 
     try {
+      const accountId = parseInt(result?.meta?.accountId || selectedAccountId, 10)
+      if (!accountId) {
+        toast.warning('请先选择账号')
+        return
+      }
+
       const orderData = {
         orderId: orderId.trim(),
         orderViewId: orderId.trim(),
@@ -217,7 +252,7 @@ function OrderQueryPage() {
       }
 
       const saveResponse = await ordersApi.saveBatch({
-        account_id: parseInt(selectedAccountId, 10),
+        account_id: accountId,
         orders: [orderData]
       })
 
@@ -236,7 +271,7 @@ function OrderQueryPage() {
       for (const couponInfo of result.coupons) {
         try {
           await ordersApi.saveCoupon({
-            account_id: parseInt(selectedAccountId, 10),
+            account_id: accountId,
             order_id: savedOrderId || null,
             order_view_id: orderId.trim(),
             coupon_data: couponInfo,
@@ -293,14 +328,14 @@ function OrderQueryPage() {
       return
     }
 
-    if (!selectedAccountId) {
-      toast.warning('请先选择账号')
-      return
-    }
     if (!orderId.trim()) {
       toast.warning('请输入订单号')
       return
     }
+
+    const resolved = await resolveQueryAccount()
+    if (!resolved) return
+    const { account } = resolved
 
     setCouponDialogLoading(true)
     setCouponDialogResult(null)
@@ -312,12 +347,12 @@ function OrderQueryPage() {
     try {
       const meituanResult = await window.electronAPI.rebateQueryOne({
         account: {
-          userid: selectedAccount.userid,
-          token: selectedAccount.token,
-          csecuuid: selectedAccount.csecuuid || '',
-          openId: selectedAccount.open_id || '',
-          openIdCipher: selectedAccount.open_id_cipher || '',
-          platform: selectedAccount.platform || 'android'
+          userid: account.userid,
+          token: account.token,
+          csecuuid: account.csecuuid || '',
+          openId: account.open_id || '',
+          openIdCipher: account.open_id_cipher || '',
+          platform: account.platform || 'android'
         },
         orderId: orderId.trim()
       })

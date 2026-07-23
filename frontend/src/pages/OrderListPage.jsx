@@ -84,9 +84,25 @@ function OrderListPage() {
     setOrderSearchMode('exact')
   }
 
+  const getOrderAccountId = (order) => {
+    const accountId = Number(order?.account_id || selectedAccountId)
+    return Number.isInteger(accountId) && accountId > 0 ? accountId : null
+  }
+
+  const getOrderAccount = (order) => {
+    const accountId = getOrderAccountId(order)
+    return accountId ? accounts.find(account => account.id === accountId) : null
+  }
+
+  const getOrderAccountLabel = (order) => {
+    const account = getOrderAccount(order)
+    if (!account) return order?.account_id ? `账号 #${order.account_id}` : '-'
+    return account.remark || account.userid || `账号 #${account.id}`
+  }
+
   const getCouponQueryCacheKey = (order) => {
     if (!order) return ''
-    return `${selectedAccountId}:${order.id}:${order.order_view_id || order.order_id || ''}`
+    return `${getOrderAccountId(order) || ''}:${order.id}:${order.order_view_id || order.order_id || ''}`
   }
 
   const getGiftOrderId = (order) => {
@@ -97,7 +113,7 @@ function OrderListPage() {
 
   const getGiftReturnStatusKey = (order) => {
     if (!order) return ''
-    return `${selectedAccountId}:${order.id}:${getGiftOrderId(order)}`
+    return `${getOrderAccountId(order) || ''}:${order.id}:${getGiftOrderId(order)}`
   }
 
   const isGiftOrder = (order) => {
@@ -269,15 +285,10 @@ function OrderListPage() {
   }
 
   const loadAccounts = async () => {
-    // 如果已加载，直接返回
     if (accountsLoaded) return
 
     try {
-      const data = await fetchAccounts(accountsApi)
-      // 只有在没有选择任何账号时，才设置默认账号为第一个
-      if (data && data.length > 0 && !orderSelectedAccountId) {
-        setOrderSelectedAccountId(String(data[0].id))
-      }
+      await fetchAccounts(accountsApi)
     } catch (error) {
       console.error('Failed to load accounts:', error)
     }
@@ -427,21 +438,13 @@ function OrderListPage() {
     return () => clearTimeout(timer)
   }, [titleSearchKeyword])
 
-  // 账号加载完成后设置默认值（仅当没有选择任何账号时）
+  // 监听账号、状态和搜索条件变化，统一重置分页后重新查询
   useEffect(() => {
-    if (accounts && accounts.length > 0 && !orderSelectedAccountId) {
-      setOrderSelectedAccountId(String(accounts[0].id))
-    }
-  }, [accounts])
-
-  // 监听账号或状态筛选变化，自动重新加载订单
-  useEffect(() => {
-    if (orderSelectedAccountId) {
-      invalidateCouponQueryCache({ closeDialog: true })
-      setGiftReturnStatusMap({})
-      resetOrderPaginationState()
-      loadOrders(1, pageSize, true, 'reset')
-    }
+    invalidateCouponQueryCache({ closeDialog: true })
+    setGiftReturnStatusMap({})
+    updateOrdersPage(1)
+    resetOrderPaginationState()
+    loadOrders(1, pageSize, true, 'reset')
   }, [orderSelectedAccountId, orderStatusFilter, debouncedOrderSearchKeyword, debouncedTitleSearchKeyword, orderSearchMode])
 
   // 分页控制
@@ -915,10 +918,10 @@ function OrderListPage() {
   const queryCouponForOrder = async (order, options = {}) => {
     const { forceRefresh = false } = options
 
-    // 检查账号信息
-    const account = accounts.find(a => a.id === parseInt(selectedAccountId))
-    if (!account) {
-      toast.error('账号不存在')
+    const accountId = getOrderAccountId(order)
+    const account = getOrderAccount(order)
+    if (!accountId || !account) {
+      toast.error('未找到订单所属账号')
       return
     }
 
@@ -989,7 +992,7 @@ function OrderListPage() {
             try {
               for (const couponInfo of coupons) {
                 await ordersApi.saveCoupon({
-                  account_id: parseInt(selectedAccountId),
+                  account_id: accountId,
                   order_id: order.id,
                   order_view_id: order.order_view_id,
                   coupon_data: couponInfo,
@@ -1066,14 +1069,9 @@ function OrderListPage() {
       return
     }
 
-    if (!selectedAccountId) {
-      toast.warning('请先选择账号')
-      return
-    }
-
-    const account = accounts.find(a => a.id === parseInt(selectedAccountId))
+    const account = getOrderAccount(order)
     if (!account) {
-      toast.error('账号不存在')
+      toast.error('未找到订单所属账号')
       return
     }
 
@@ -1145,8 +1143,9 @@ function OrderListPage() {
   }, [])
 
   const handleExport = async () => {
-    const headers = ['订单号', '标题', '分类', '状态', '金额', '下单时间', '券码查询']
+    const headers = ['所属账号', '订单号', '标题', '分类', '状态', '金额', '下单时间', '券码查询']
     const rows = orders.map(order => [
+      getOrderAccountLabel(order),
       order.order_id,
       order.title || '',
       order.catename || '',
@@ -1423,6 +1422,7 @@ function OrderListPage() {
           <table className="w-full">
             <thead className="bg-gray-50 sticky top-0">
               <tr>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">所属账号</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">订单号</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">标题</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">分类</th>
@@ -1440,6 +1440,9 @@ function OrderListPage() {
                   className={`cursor-pointer ${singleExactOrder?.id === order.id ? 'bg-orange-50 ring-1 ring-inset ring-orange-200' : 'hover:bg-gray-50'}`}
                   onContextMenu={(e) => handleContextMenu(e, order)}
                 >
+                  <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap" title={getOrderAccount(order)?.userid || ''}>
+                    {getOrderAccountLabel(order)}
+                  </td>
                   <td className="px-4 py-3 text-sm text-gray-900 font-mono">{order.order_id}</td>
                   <td className="px-4 py-3 text-sm text-gray-500 truncate max-w-[200px]" title={order.title}>{order.title || '-'}</td>
                   <td className="px-4 py-3 text-sm text-gray-500">{order.catename || '-'}</td>
@@ -1467,7 +1470,7 @@ function OrderListPage() {
               ))}
               {orders.length === 0 && (
                 <tr>
-                  <td colSpan="8" className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan="9" className="px-4 py-8 text-center text-gray-500">
                     暂无订单数据
                   </td>
                 </tr>

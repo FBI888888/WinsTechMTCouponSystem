@@ -33,7 +33,7 @@ export const useDataStore = create((set, get) => ({
     // 发起新请求
     const requestId = ++accountsRequestId
     setAccountsLoading(true)
-    accountsPromise = api.getAll().then(response => {
+    accountsPromise = api.getAll({ limit: 1000 }).then(response => {
       if (requestId !== accountsRequestId) {
         return get().accounts
       }
@@ -77,7 +77,7 @@ export const useDataStore = create((set, get) => ({
 
   // 订单页面筛选条件（持久化）
   orderSelectedAccountId: '',
-  orderStatusFilter: '2',
+  orderStatusFilter: '0',
   setOrderSelectedAccountId: (id) => set({ orderSelectedAccountId: id }),
   setOrderStatusFilter: (filter) => set({ orderStatusFilter: filter }),
 
@@ -152,7 +152,7 @@ export const useDataStore = create((set, get) => ({
       ordersPage: 1,
       ordersLoaded: false,
       orderSelectedAccountId: '',
-      orderStatusFilter: '2',
+      orderStatusFilter: '0',
       orderSyncing: false,
       orderSyncProgress: { current: 0, total: 0, message: '' },
       orderSyncRunId: 0,

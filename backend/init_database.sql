@@ -135,6 +135,44 @@ CREATE TABLE IF NOT EXISTS `coupons` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='券码表';
 
 -- =====================================================
+-- 礼物领取事实表
+-- =====================================================
+CREATE TABLE IF NOT EXISTS `gift_claims` (
+    `id` INT NOT NULL AUTO_INCREMENT,
+    `gift_id` VARCHAR(50) NOT NULL COMMENT '礼物单号/明文giftId',
+    `source_order_id` VARCHAR(50) DEFAULT NULL COMMENT '礼物卡片来源orderId',
+    `account_id` INT NOT NULL COMMENT '首次成功领取账号，后续不可切换',
+    `order_db_id` INT DEFAULT NULL COMMENT '投影到orders后的主键',
+    `coupon_id` INT DEFAULT NULL COMMENT '投影到coupons后的主键',
+    `coupon_code` VARCHAR(100) DEFAULT NULL COMMENT '券码，未查询到时为空',
+    `coupon_query_status` INT NOT NULL DEFAULT 0 COMMENT '0=待查询,1=成功,2=失败',
+    `gift_type` VARCHAR(20) NOT NULL DEFAULT 'meituan' COMMENT 'meituan/live',
+    `data_source` VARCHAR(32) NOT NULL DEFAULT 'wxbot_gift_submit',
+    `title` VARCHAR(200) DEFAULT NULL,
+    `raw_data` JSON DEFAULT NULL,
+    `claimed_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `coupon_queried_at` DATETIME DEFAULT NULL,
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_gift_claims_gift_id` (`gift_id`),
+    UNIQUE KEY `uq_gift_claims_source_order_id` (`source_order_id`),
+    INDEX `idx_gift_claims_account_id` (`account_id`),
+    INDEX `idx_gift_claims_order_db_id` (`order_db_id`),
+    INDEX `idx_gift_claims_coupon_id` (`coupon_id`),
+    INDEX `idx_gift_claims_coupon_code` (`coupon_code`),
+    INDEX `idx_gift_claims_query_status` (`coupon_query_status`),
+    INDEX `idx_gift_claims_gift_type` (`gift_type`),
+    INDEX `idx_gift_claims_data_source` (`data_source`),
+    INDEX `idx_gift_claims_claimed_at` (`claimed_at`),
+    INDEX `idx_gift_claims_account_claimed` (`account_id`, `claimed_at`),
+    INDEX `idx_gift_claims_source_status` (`data_source`, `coupon_query_status`),
+    FOREIGN KEY (`account_id`) REFERENCES `mt_accounts`(`id`) ON DELETE CASCADE,
+    FOREIGN KEY (`order_db_id`) REFERENCES `orders`(`id`) ON DELETE SET NULL,
+    FOREIGN KEY (`coupon_id`) REFERENCES `coupons`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='礼物领取事实表';
+
+-- =====================================================
 -- 券码变更历史表
 -- =====================================================
 CREATE TABLE IF NOT EXISTS `coupon_history` (

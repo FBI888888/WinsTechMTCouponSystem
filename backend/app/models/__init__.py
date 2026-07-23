@@ -7,6 +7,7 @@ from app.models.coupon_history import CouponHistory
 from app.models.log import OperationLog, LoginLog
 from app.models.config import SystemConfig
 from app.models.api_key import APIKey
+from app.models.gift_claim import GiftClaim
 
 __all__ = [
     "User",
@@ -18,4 +19,5 @@ __all__ = [
     "LoginLog",
     "SystemConfig",
     "APIKey",
+    "GiftClaim",
 ]

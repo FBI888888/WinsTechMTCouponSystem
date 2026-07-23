@@ -19,7 +19,7 @@ if hasattr(time, 'tzset'):
 
 from app.config import settings
 from app.database import init_db, SessionLocal, get_db, engine
-from app.routers import auth, accounts, users, orders, coupons, logs, settings as settings_router, stats
+from app.routers import auth, accounts, users, orders, coupons, gift_claims, logs, settings as settings_router, stats
 
 # 跨平台文件锁支持
 try:
@@ -80,6 +80,15 @@ def check_rate_limit(ip: str, endpoint: str, limit: int, window_seconds: int = 6
 
 async def scheduled_scan_job():
     """定时扫描任务"""
+    db = SessionLocal()
+    try:
+        from app.services.meituan.scanner import is_auto_scan_enabled
+        if not is_auto_scan_enabled(db):
+            logger.info("[Scheduler] Auto scan is disabled, skipping scheduled job")
+            return
+    finally:
+        db.close()
+
     logger.info("[Scheduler] Starting scheduled scan job...")
     try:
         from app.services.meituan.scanner import run_scheduled_scan
@@ -232,6 +241,7 @@ async def rate_limit_middleware(request: Request, call_next):
         "/pending-coupon-query",
         "/save-coupon",
         "/orders/save",
+        "/gift-claims",
     ]
     if any(kw in request.url.path for kw in INTERNAL_PATH_KEYWORDS):
         response = await call_next(request)
@@ -271,6 +281,7 @@ app.include_router(accounts.router)
 app.include_router(users.router)
 app.include_router(orders.router)
 app.include_router(coupons.router)
+app.include_router(gift_claims.router)
 app.include_router(logs.router)
 app.include_router(settings_router.router)
 app.include_router(stats.router)

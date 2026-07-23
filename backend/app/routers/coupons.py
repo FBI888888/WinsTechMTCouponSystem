@@ -16,6 +16,7 @@ from app.models.coupon import Coupon
 from app.models.coupon_history import CouponHistory
 from app.models.order import Order
 from app.models.account import MTAccount
+from app.models.gift_claim import GiftClaim
 from app.schemas.coupon import (
     CouponResponse, CouponQueryRequest, CouponQueryResponse,
     CouponBackendQueryResponse, CouponBatchUpdateRequest, CouponChangeInfo
@@ -407,31 +408,33 @@ def list_claim_records(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """礼物领取记录（复用 coupons/orders，按 data_source 筛选）。"""
+    """礼物领取事实记录，包含尚未查到券码的待查询记录。"""
     query = (
-        db.query(Coupon, Order, MTAccount)
-        .outerjoin(Order, Coupon.order_id == Order.id)
-        .outerjoin(MTAccount, Coupon.account_id == MTAccount.id)
+        db.query(GiftClaim, Order, MTAccount, Coupon)
+        .outerjoin(Order, GiftClaim.order_db_id == Order.id)
+        .outerjoin(MTAccount, GiftClaim.account_id == MTAccount.id)
+        .outerjoin(Coupon, GiftClaim.coupon_id == Coupon.id)
     )
 
     if data_source:
-        query = query.filter(Coupon.data_source == data_source)
+        query = query.filter(GiftClaim.data_source == data_source)
     if gift_id:
-        query = query.filter(Coupon.gift_id == gift_id.strip())
+        query = query.filter(GiftClaim.gift_id == gift_id.strip())
     if coupon_code:
-        query = query.filter(Coupon.coupon_code == coupon_code.strip())
+        query = query.filter(GiftClaim.coupon_code == coupon_code.strip())
     if account_id:
-        query = query.filter(Coupon.account_id == account_id)
+        query = query.filter(GiftClaim.account_id == account_id)
     if start_time:
-        query = query.filter(Coupon.created_at >= start_time)
+        query = query.filter(GiftClaim.created_at >= start_time)
     if end_time:
-        query = query.filter(Coupon.created_at <= end_time)
+        query = query.filter(GiftClaim.created_at <= end_time)
     if keyword:
         kw = f"%{keyword.strip()}%"
         query = query.filter(
             or_(
-                Coupon.gift_id.like(kw),
-                Coupon.coupon_code.like(kw),
+                GiftClaim.gift_id.like(kw),
+                GiftClaim.source_order_id.like(kw),
+                GiftClaim.coupon_code.like(kw),
                 MTAccount.userid.like(kw),
                 MTAccount.remark.like(kw),
                 Order.order_id.like(kw),
@@ -440,29 +443,33 @@ def list_claim_records(
 
     total = query.count()
     rows = (
-        query.order_by(Coupon.created_at.desc(), Coupon.id.desc())
+        query.order_by(GiftClaim.created_at.desc(), GiftClaim.id.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
     )
 
     items = []
-    for coupon, order, account in rows:
+    for claim, order, account, coupon in rows:
+        coupon_status = coupon.coupon_status if coupon else (
+            "待查询" if claim.coupon_query_status != 1 else None
+        )
         items.append(
             ClaimRecordItem(
-                id=coupon.id,
-                coupon_code=coupon.coupon_code,
-                gift_id=coupon.gift_id,
-                order_id=order.order_id if order else None,
-                order_db_id=order.id if order else None,
-                account_id=coupon.account_id,
+                id=claim.id,
+                coupon_code=claim.coupon_code,
+                gift_id=claim.gift_id,
+                order_id=(order.order_id if order else claim.source_order_id),
+                order_db_id=order.id if order else claim.order_db_id,
+                account_id=claim.account_id,
                 account_userid=account.userid if account else None,
                 account_remark=account.remark if account else None,
-                coupon_status=coupon.coupon_status,
-                use_status=coupon.use_status,
-                data_source=coupon.data_source,
-                query_time=coupon.query_time,
-                created_at=coupon.created_at,
+                coupon_status=coupon_status,
+                coupon_query_status=claim.coupon_query_status,
+                use_status=coupon.use_status if coupon else None,
+                data_source=claim.data_source,
+                query_time=claim.coupon_queried_at,
+                created_at=claim.created_at,
             )
         )
 

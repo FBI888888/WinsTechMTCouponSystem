@@ -16,6 +16,7 @@ function SettingsPage() {
   const configsAbortControllerRef = useRef(null)
 
   const defaultConfigs = [
+    { config_key: 'scan_enabled', config_value: 'true', config_type: 'boolean', category: 'scan', description: '启用后端自动扫描任务', is_public: false },
     { config_key: 'scan_interval', config_value: '30', config_type: 'number', category: 'scan', description: '扫描间隔（分钟）', is_public: false },
     { config_key: 'scan_request_interval', config_value: '0.7', config_type: 'number', category: 'scan', description: '请求间隔（秒）', is_public: false },
     { config_key: 'scan_max_retries', config_value: '3', config_type: 'number', category: 'scan', description: '最大重试次数', is_public: false },
@@ -102,16 +103,50 @@ function SettingsPage() {
                 <label className="text-sm font-medium text-gray-700">{config.description}</label>
                 <p className="text-xs text-gray-400">{config.config_key}</p>
               </div>
-              <input
-                type={config.config_type === 'number' ? 'number' : 'text'}
-                value={config.config_value || ''}
-                onChange={(e) => {
-                  const newConfigs = [...configs]
-                  newConfigs[index].config_value = e.target.value
-                  setConfigs(newConfigs)
-                }}
-                className="flex-1 px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
-              />
+              {config.config_type === 'boolean' ? (
+                <div className="flex-1 flex items-center gap-3">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={String(config.config_value).toLowerCase() === 'true'}
+                    onClick={() => {
+                      const newConfigs = [...configs]
+                      const enabled = String(config.config_value).toLowerCase() === 'true'
+                      newConfigs[index] = {
+                        ...newConfigs[index],
+                        config_value: enabled ? 'false' : 'true'
+                      }
+                      setConfigs(newConfigs)
+                    }}
+                    className={`relative inline-flex h-7 w-12 shrink-0 rounded-full transition-colors ${
+                      String(config.config_value).toLowerCase() === 'true' ? 'bg-orange-500' : 'bg-gray-300'
+                    }`}
+                  >
+                    <span
+                      className={`mt-1 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                        String(config.config_value).toLowerCase() === 'true' ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                  <span className="text-sm text-gray-600">
+                    {String(config.config_value).toLowerCase() === 'true' ? '已启用' : '已关闭'}
+                  </span>
+                  {config.config_key === 'scan_enabled' && (
+                    <span className="text-xs text-gray-400">关闭后不再启动新的自动扫描，正在执行的任务会正常完成</span>
+                  )}
+                </div>
+              ) : (
+                <input
+                  type={config.config_type === 'number' ? 'number' : 'text'}
+                  value={config.config_value || ''}
+                  onChange={(e) => {
+                    const newConfigs = [...configs]
+                    newConfigs[index] = { ...newConfigs[index], config_value: e.target.value }
+                    setConfigs(newConfigs)
+                  }}
+                  className="flex-1 px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                />
+              )}
             </div>
           ))}
         </div>

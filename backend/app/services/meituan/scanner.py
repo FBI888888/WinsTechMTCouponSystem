@@ -918,6 +918,14 @@ async def run_scheduled_scan():
         db.close()
 
 
+def is_auto_scan_enabled(db: Session) -> bool:
+    """读取自动扫描开关；配置缺失时保持向后兼容，默认启用。"""
+    config = db.query(SystemConfig).filter(SystemConfig.config_key == "scan_enabled").first()
+    if not config or config.config_value is None:
+        return True
+    return str(config.config_value).strip().lower() not in {"0", "false", "off", "no", "disabled"}
+
+
 def get_scan_interval_minutes(db: Session) -> int:
     """从系统配置获取扫描间隔"""
     config = db.query(SystemConfig).filter(SystemConfig.config_key == "scan_interval").first()

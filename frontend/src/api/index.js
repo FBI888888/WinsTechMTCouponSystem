@@ -70,6 +70,7 @@ export const ordersApi = {
   updateQueryStatus: (data) => api.post('/api/orders/update-query-status', data),
   updateGiftReturnStatus: (data) => api.post('/api/orders/update-gift-return-status', data),
   getPendingCouponQuery: (params) => api.get('/api/orders/pending-coupon-query', { params }),
+  resolveAccount: (orderId) => api.get('/api/orders/resolve-account', { params: { order_id: orderId } }),
   queryOrderByOrderId: (data) => api.post('/api/orders/query-by-order-id', data)
 }
 

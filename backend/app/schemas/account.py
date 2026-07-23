@@ -96,7 +96,7 @@ class GiftClaimSaveRequest(BaseModel):
     account_id: int
     gift_id: str
     order_id: Optional[str] = None
-    coupon_code: str
+    coupon_code: Optional[str] = None
     encode: Optional[str] = None
     coupon_status: Optional[str] = None
     use_status: Optional[int] = None
@@ -116,6 +116,7 @@ class ClaimRecordItem(BaseModel):
     account_userid: Optional[str] = None
     account_remark: Optional[str] = None
     coupon_status: Optional[str] = None
+    coupon_query_status: int = 0
     use_status: Optional[int] = None
     data_source: Optional[str] = None
     query_time: Optional[datetime] = None

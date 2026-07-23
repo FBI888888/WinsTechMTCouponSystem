@@ -47,3 +47,4 @@ class MTAccount(Base):
     orders = relationship("Order", back_populates="account")
     coupons = relationship("Coupon", back_populates="account")
     coupon_history = relationship("CouponHistory", back_populates="account")
+    gift_claims = relationship("GiftClaim", back_populates="account")

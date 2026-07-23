@@ -22,6 +22,8 @@ from app.schemas.order import (
     PendingCouponQueryResponse,
 )
 from app.schemas.account import GiftClaimSaveRequest
+from app.schemas.gift_claim import GiftClaimSaveRequest as DomainGiftClaimSaveRequest
+from app.services.gift_claim_service import save_gift_claim as save_gift_claim_domain
 from app.deps import get_current_user
 from app.routers.stats import invalidate_dashboard_stats_cache
 from app.utils.order_status import (
@@ -233,6 +235,53 @@ def _set_cached_order_count(cache_key: tuple, total: int) -> None:
             "value": total,
             "expires_at": time.time() + settings.ORDER_LIST_COUNT_CACHE_TTL_SECONDS,
         }
+
+
+def _resolve_order_account_ids(db: Session, order_number: str) -> list[int]:
+    normalized_order_number = str(order_number or "").strip()
+    if not normalized_order_number:
+        return []
+
+    rows = (
+        db.query(Order.account_id)
+        .filter(
+            or_(
+                Order.order_id == normalized_order_number,
+                Order.order_view_id == normalized_order_number,
+            )
+        )
+        .distinct()
+        .limit(2)
+        .all()
+    )
+    return [int(row[0]) for row in rows]
+
+
+def _build_order_account_resolution(db: Session, order_number: str) -> dict:
+    account_ids = _resolve_order_account_ids(db, order_number)
+    if len(account_ids) == 1:
+        return {
+            "success": True,
+            "account_id": account_ids[0],
+            "requires_account_selection": False,
+            "reason": "matched",
+            "message": "已自动匹配订单所属账号",
+        }
+    if not account_ids:
+        return {
+            "success": False,
+            "account_id": None,
+            "requires_account_selection": True,
+            "reason": "not_found",
+            "message": "数据库中不存在此订单，请选择账号后查询",
+        }
+    return {
+        "success": False,
+        "account_id": None,
+        "requires_account_selection": True,
+        "reason": "ambiguous",
+        "message": "该订单号匹配到多个账号，请手动选择账号",
+    }
 
 
 def _parse_cursor_order_pay_time(raw_value: Optional[str]) -> Optional[datetime]:
@@ -491,6 +540,15 @@ def get_existing_order_ids(
     )
     return {r.order_id: {"order_status": r.order_status, "showstatus": r.showstatus} for r in rows}
 
+@router.get("/resolve-account")
+def resolve_order_account(
+    order_id: str = Query(..., min_length=1),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return _build_order_account_resolution(db, order_id)
+
+
 @router.get("/{order_id}", response_model=OrderResponse)
 def get_order(
     order_id: int,
@@ -728,122 +786,12 @@ def save_gift_claim(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    礼物交单领取成功后原子落库：upsert 礼物订单 + upsert 券码，并更新账号 last_claim_at。
-    """
-    account = db.query(MTAccount).filter(MTAccount.id == request.account_id).first()
-    if not account:
-        raise HTTPException(status_code=404, detail="Account not found")
-
-    gift_id = (request.gift_id or "").strip()
-    coupon_code = (request.coupon_code or "").strip()
-    if not gift_id:
-        raise HTTPException(status_code=400, detail="gift_id is required")
-    if not coupon_code:
-        raise HTTPException(status_code=400, detail="coupon_code is required")
-
-    order_key = (request.order_id or gift_id).strip()
-    data_source = (request.data_source or "wxbot_gift_submit").strip() or "wxbot_gift_submit"
-    gift_type = str(request.gift_type or "meituan").strip().lower()
-    if gift_type not in ("meituan", "live"):
-        raise HTTPException(status_code=400, detail="gift_type 必须是 meituan 或 live")
-    now = datetime.now()
-
-    # 将 gift_type 写入 raw_data，便于领取记录追溯
-    raw_data = dict(request.raw_data or {})
-    raw_data.setdefault("gift_type", gift_type)
-
-    order = db.query(Order).filter(
-        Order.account_id == request.account_id,
-        Order.order_id == order_key,
-    ).first()
-    if not order:
-        order = db.query(Order).filter(
-            Order.account_id == request.account_id,
-            Order.order_view_id == gift_id,
-        ).first()
-
-    if order:
-        order.order_view_id = order.order_view_id or gift_id
-        order.is_gift = True
-        order.title = request.title or order.title or f"礼物领取 {gift_id}"
-        order.coupon_query_status = 1
-        order.data_source = data_source
-        order.updated_at = now
-    else:
-        order = Order(
-            account_id=request.account_id,
-            order_id=order_key,
-            order_view_id=gift_id,
-            title=request.title or f"礼物领取 {gift_id}",
-            order_status_bucket="completed",
-            is_gift=True,
-            order_pay_time=now,
-            coupon_query_status=1,
-            data_source=data_source,
-        )
-        db.add(order)
-        db.flush()
-
-    existing = db.query(Coupon).filter(
-        Coupon.order_id == order.id,
-        Coupon.coupon_code == coupon_code,
-    ).first()
-    is_new_claim = existing is None
-    if existing:
-        existing.encode = request.encode or existing.encode
-        existing.coupon_status = request.coupon_status or existing.coupon_status
-        existing.use_status = request.use_status if request.use_status is not None else existing.use_status
-        existing.gift_id = gift_id
-        existing.raw_data = raw_data
-        existing.data_source = data_source
-        existing.query_time = now
-        existing.updated_at = now
-        coupon = existing
-    else:
-        coupon = Coupon(
-            order_id=order.id,
-            account_id=request.account_id,
-            coupon_code=coupon_code,
-            encode=request.encode,
-            coupon_status=request.coupon_status,
-            use_status=request.use_status,
-            gift_id=gift_id,
-            raw_data=raw_data,
-            data_source=data_source,
-            query_time=now,
-        )
-        db.add(coupon)
-
-    if gift_type == "live":
-        account.last_claim_at_live = now
-        if is_new_claim:
-            db.query(MTAccount).filter(MTAccount.id == request.account_id).update(
-                {MTAccount.live_claim_count: MTAccount.live_claim_count + 1},
-                synchronize_session=False,
-            )
-    else:
-        account.last_claim_at_meituan = now
-        account.last_claim_at = now
-        if is_new_claim:
-            db.query(MTAccount).filter(MTAccount.id == request.account_id).update(
-                {MTAccount.meituan_claim_count: MTAccount.meituan_claim_count + 1},
-                synchronize_session=False,
-            )
-    db.commit()
+    """兼容旧客户端的礼物领取落库入口，统一委托 gift_claim 领域服务。"""
+    domain_request = DomainGiftClaimSaveRequest(**request.model_dump())
+    result = save_gift_claim_domain(db, domain_request)
     invalidate_order_list_count_cache()
     invalidate_dashboard_stats_cache()
-
-    return {
-        "success": True,
-        "message": "Gift claim saved successfully",
-        "order_id": order.id,
-        "coupon_id": coupon.id if coupon.id else None,
-        "gift_id": gift_id,
-        "coupon_code": coupon_code,
-        "account_id": request.account_id,
-        "gift_type": gift_type,
-    }
+    return {"success": True, **result}
 
 
 @router.post("/update-query-status")
@@ -933,12 +881,17 @@ async def query_order_by_order_id(
     from app.services.meituan.scanner import task_service
 
     account_id = data.get("account_id")
-    order_id = data.get("order_id")
+    order_id = str(data.get("order_id") or "").strip()
 
-    if not account_id or not order_id:
-        return {"success": False, "message": "缂哄皯璐﹀彿ID鎴栬鍗曞彿"}
+    if not order_id:
+        return {"success": False, "message": "缺少订单号"}
 
-    # 鑾峰彇璐﹀彿淇℃伅
+    if not account_id:
+        resolution = _build_order_account_resolution(db, order_id)
+        if not resolution["success"]:
+            return resolution
+        account_id = resolution["account_id"]
+
     account = db.query(MTAccount).filter(MTAccount.id == account_id).first()
     if not account:
         return {"success": False, "message": "Account not found"}
@@ -946,12 +899,15 @@ async def query_order_by_order_id(
     try:
         existing_order = db.query(Order).filter(
             Order.account_id == account_id,
-            Order.order_id == order_id
+            or_(
+                Order.order_id == order_id,
+                Order.order_view_id == order_id,
+            )
         ).first()
 
         order_payload = {
-            "orderid": str(order_id),
-            "stringOrderId": str(existing_order.order_view_id or order_id) if existing_order else str(order_id),
+            "orderid": str(existing_order.order_id or order_id) if existing_order else str(order_id),
+            "stringOrderId": str(existing_order.order_view_id or existing_order.order_id or order_id) if existing_order else str(order_id),
             "title": existing_order.title if existing_order else "",
             "orderAmount": float(existing_order.order_amount or 0) if existing_order and existing_order.order_amount is not None else None,
             "orderStatus": existing_order.order_status if existing_order else None,
@@ -978,7 +934,8 @@ async def query_order_by_order_id(
             "success": True,
             "coupons": coupons,
             "message": f"Query succeeded, fetched {len(coupons)} coupons",
-            "saved": True
+            "saved": True,
+            "account_id": account_id
         }
     except Exception as e:
         return {"success": False, "message": f"鏌ヨ寮傚父: {str(e)}"}

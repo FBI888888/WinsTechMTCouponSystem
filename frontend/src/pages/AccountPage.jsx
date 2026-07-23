@@ -23,6 +23,7 @@ function AccountPage() {
   const [url, setUrl] = useState('')
   const [platform, setPlatform] = useState('windows')
   const [searchKeyword, setSearchKeyword] = useState('')
+  const [enabledFilter, setEnabledFilter] = useState('enabled')
   const [loading, setLoading] = useState(false)
   const [selectedRows, setSelectedRows] = useState(new Set())
   const [tokenCapturing, setTokenCapturing] = useState(false)
@@ -49,6 +50,17 @@ function AccountPage() {
   const [scanDialogOpen, setScanDialogOpen] = useState(false)
   const [scanDialogAccountId, setScanDialogAccountId] = useState(null)
   const [scanStatusFilter, setScanStatusFilter] = useState(2) // 默认待使用
+
+  const filteredAccounts = useMemo(() => {
+    if (enabledFilter === 'enabled') return accounts.filter(account => account.disabled !== 1)
+    if (enabledFilter === 'disabled') return accounts.filter(account => account.disabled === 1)
+    return accounts
+  }, [accounts, enabledFilter])
+
+  useEffect(() => {
+    setSelectedRows(new Set())
+    setContextIndex(-1)
+  }, [enabledFilter])
 
   // Load accounts from API
   const loadAccounts = async (forceRefresh = false) => {
@@ -266,11 +278,8 @@ function AccountPage() {
     }
 
     try {
-      for (const index of selectedRows) {
-        const account = accounts[index]
-        if (account?.id) {
-          await accountsApi.delete(account.id)
-        }
+      for (const accountId of selectedRows) {
+        await accountsApi.delete(accountId)
       }
       await loadAccounts(true)
       setSelectedRows(new Set())
@@ -399,15 +408,16 @@ function AccountPage() {
       return
     }
     const keyword = searchKeyword.toLowerCase()
-    const index = accounts.findIndex(a =>
+    const account = filteredAccounts.find(a =>
       (a.remark || '').toLowerCase().includes(keyword) ||
       (a.userid || '').toLowerCase().includes(keyword) ||
       (a.token || '').toLowerCase().includes(keyword) ||
       (a.url || '').toLowerCase().includes(keyword)
     )
-    if (index >= 0) {
-      document.getElementById(`row-${index}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      showMessage('success', `已定位到第 ${index + 1} 行`)
+    if (account) {
+      document.getElementById(`row-${account.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      const visibleIndex = filteredAccounts.findIndex(item => item.id === account.id)
+      showMessage('success', `已定位到第 ${visibleIndex + 1} 行`)
     } else {
       showMessage('error', '未找到匹配结果')
     }
@@ -464,12 +474,12 @@ function AccountPage() {
     }
   }
 
-  const handleContextMenu = (e, index) => {
+  const handleContextMenu = (e, account) => {
     e.preventDefault()
-    if (!selectedRows.has(index)) {
-      setSelectedRows(new Set([index]))
+    if (!selectedRows.has(account.id)) {
+      setSelectedRows(new Set([account.id]))
     }
-    setContextIndex(index)
+    setContextIndex(account.id)
     setContextMenu({ visible: true, x: e.clientX, y: e.clientY })
   }
 
@@ -483,17 +493,20 @@ function AccountPage() {
     return () => document.removeEventListener('click', handleClick)
   }, [])
 
-  const toggleRowSelection = (index) => {
+  const toggleRowSelection = (accountId) => {
     const newSelected = new Set(selectedRows)
-    if (newSelected.has(index)) {
-      newSelected.delete(index)
+    if (newSelected.has(accountId)) {
+      newSelected.delete(accountId)
     } else {
-      newSelected.add(index)
+      newSelected.add(accountId)
     }
     setSelectedRows(newSelected)
   }
 
-  const allChecked = useMemo(() => selectedRows.size === accounts.length && accounts.length > 0, [selectedRows, accounts.length])
+  const allChecked = useMemo(
+    () => filteredAccounts.length > 0 && filteredAccounts.every(account => selectedRows.has(account.id)),
+    [selectedRows, filteredAccounts]
+  )
 
   // 打开扫描对话框
   const openScanDialog = (accountId) => {
@@ -829,7 +842,17 @@ function AccountPage() {
       </div>
 
       <div className="bg-white rounded-xl shadow-sm p-4 mb-4">
-        <div className="flex gap-3">
+        <div className="flex gap-3 flex-wrap">
+          <select
+            value={enabledFilter}
+            onChange={(e) => setEnabledFilter(e.target.value)}
+            className="min-w-[130px] px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            aria-label="账号启用状态筛选"
+          >
+            <option value="enabled">启用账号</option>
+            <option value="disabled">禁用账号</option>
+            <option value="all">全部账号</option>
+          </select>
           <input
             type="text"
             value={searchKeyword}
@@ -854,7 +877,7 @@ function AccountPage() {
                     type="checkbox"
                     onChange={(e) => {
                       if (e.target.checked) {
-                        setSelectedRows(new Set(accounts.map((_, i) => i)))
+                        setSelectedRows(new Set(filteredAccounts.map(account => account.id)))
                       } else {
                         setSelectedRows(new Set())
                       }
@@ -872,16 +895,16 @@ function AccountPage() {
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {accounts.map((account, index) => (
+              {filteredAccounts.map((account) => (
                 <tr
                   key={account.id}
-                  id={`row-${index}`}
-                  className={`hover:bg-gray-50 cursor-pointer ${selectedRows.has(index) ? 'bg-orange-50' : ''}`}
+                  id={`row-${account.id}`}
+                  className={`hover:bg-gray-50 cursor-pointer ${selectedRows.has(account.id) ? 'bg-orange-50' : ''}`}
                   onDoubleClick={() => handleRowDoubleClick(account)}
-                  onContextMenu={(e) => handleContextMenu(e, index)}
+                  onContextMenu={(e) => handleContextMenu(e, account)}
                 >
                   <td className="px-4 py-3">
-                    <input type="checkbox" checked={selectedRows.has(index)} onChange={() => toggleRowSelection(index)} />
+                    <input type="checkbox" checked={selectedRows.has(account.id)} onChange={() => toggleRowSelection(account.id)} />
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-900">{account.remark}</td>
                   <td className="px-4 py-3 text-sm text-gray-500 font-mono">{account.userid}</td>
@@ -954,6 +977,8 @@ function AccountPage() {
                           try {
                             await accountsApi.toggleDisabled(account.id)
                             await loadAccounts(true)
+                            setSelectedRows(new Set())
+                            setContextIndex(-1)
                             showMessage('success', account.disabled === 1 ? '已启用账号' : '已禁用账号')
                           } catch (error) {
                             showMessage('error', '操作失败: ' + error.message)
@@ -990,10 +1015,10 @@ function AccountPage() {
                   </td>
                 </tr>
               ))}
-              {accounts.length === 0 && (
+              {filteredAccounts.length === 0 && (
                 <tr>
                   <td colSpan="8" className="px-4 py-8 text-center text-gray-500">
-                    暂无账号，请添加账号
+                    {enabledFilter === 'enabled' ? '暂无启用账号' : enabledFilter === 'disabled' ? '暂无禁用账号' : '暂无账号，请添加账号'}
                   </td>
                 </tr>
               )}
@@ -1010,14 +1035,15 @@ function AccountPage() {
         >
           <button
             onClick={() => {
-              const idx = contextIndex >= 0 ? contextIndex : [...selectedRows][0]
-              const account = accounts[idx]
+              const accountId = contextIndex >= 0 ? contextIndex : [...selectedRows][0]
+              const account = accounts.find(item => item.id === accountId)
               if (!account) {
                 showMessage('error', '未选择账号')
                 closeContextMenu()
                 return
               }
-              setEditIndex(idx)
+              const accountIndex = accounts.findIndex(item => item.id === account.id)
+              setEditIndex(accountIndex)
               setEditUserid(String(account.userid || ''))
               setEditToken(String(account.token || ''))
               setEditCsecuuid(String(account.csecuuid || ''))
