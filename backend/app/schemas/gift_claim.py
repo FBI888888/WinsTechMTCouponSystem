@@ -1,14 +1,18 @@
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.account import GiftType
 
 
 class GiftClaimSaveRequest(BaseModel):
     account_id: int
-    gift_id: str
+    gift_id: Optional[str] = None
+    gift_id_encrypt_hash: Optional[str] = Field(
+        default=None,
+        description="SHA256(normalized giftIdEncrypt) hex",
+    )
     order_id: Optional[str] = None
     coupon_code: Optional[str] = None
     encode: Optional[str] = None
@@ -28,6 +32,7 @@ class GiftClaimResponse(BaseModel):
     account_locked: bool = False
     account_id: Optional[int] = None
     gift_id: Optional[str] = None
+    gift_id_encrypt_hash: Optional[str] = None
     order_id: Optional[str] = None
     coupon_code: Optional[str] = None
     coupon_query_status: int = 0

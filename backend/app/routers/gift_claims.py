@@ -20,11 +20,17 @@ router = APIRouter(prefix="/api/gift-claims", tags=["gift-claims"])
 @router.get("/precheck", response_model=GiftClaimResponse)
 def precheck_gift_claim(
     gift_id: str = Query(""),
+    gift_id_encrypt_hash: str = Query(""),
     order_id: str = Query(""),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    claim = find_gift_claim(db, gift_id=gift_id, order_id=order_id)
+    claim = find_gift_claim(
+        db,
+        gift_id=gift_id,
+        gift_id_encrypt_hash=gift_id_encrypt_hash,
+        order_id=order_id,
+    )
     return serialize_gift_claim(claim)
 
 

@@ -433,6 +433,7 @@ def list_claim_records(
         query = query.filter(
             or_(
                 GiftClaim.gift_id.like(kw),
+                GiftClaim.gift_id_encrypt_hash.like(kw),
                 GiftClaim.source_order_id.like(kw),
                 GiftClaim.coupon_code.like(kw),
                 MTAccount.userid.like(kw),
@@ -459,6 +460,7 @@ def list_claim_records(
                 id=claim.id,
                 coupon_code=claim.coupon_code,
                 gift_id=claim.gift_id,
+                gift_id_encrypt_hash=claim.gift_id_encrypt_hash,
                 order_id=(order.order_id if order else claim.source_order_id),
                 order_db_id=order.id if order else claim.order_db_id,
                 account_id=claim.account_id,

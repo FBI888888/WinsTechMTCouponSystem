@@ -94,7 +94,8 @@ class AccountClearCooldownRequest(BaseModel):
 
 class GiftClaimSaveRequest(BaseModel):
     account_id: int
-    gift_id: str
+    gift_id: Optional[str] = None
+    gift_id_encrypt_hash: Optional[str] = None
     order_id: Optional[str] = None
     coupon_code: Optional[str] = None
     encode: Optional[str] = None
@@ -110,6 +111,7 @@ class ClaimRecordItem(BaseModel):
     id: int
     coupon_code: Optional[str] = None
     gift_id: Optional[str] = None
+    gift_id_encrypt_hash: Optional[str] = None
     order_id: Optional[str] = None
     order_db_id: Optional[int] = None
     account_id: int

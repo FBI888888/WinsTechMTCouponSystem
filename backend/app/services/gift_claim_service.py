@@ -2,7 +2,6 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -21,32 +20,46 @@ def _normalize(value: Optional[str]) -> str:
     return str(value or "").strip()
 
 
-def _find_matching_claims(
-    db: Session,
-    gift_id: str = "",
-    order_id: str = "",
-) -> list[GiftClaim]:
-    filters = []
-    if gift_id:
-        filters.append(GiftClaim.gift_id == gift_id)
-    if order_id:
-        filters.append(GiftClaim.source_order_id == order_id)
-    if not filters:
-        return []
-    return db.query(GiftClaim).filter(or_(*filters)).limit(2).all()
+def _normalize_encrypt_hash(value: Optional[str]) -> str:
+    hash_value = _normalize(value).lower()
+    if hash_value and len(hash_value) == 64 and all(ch in "0123456789abcdef" for ch in hash_value):
+        return hash_value
+    return ""
 
 
 def find_gift_claim(
     db: Session,
     gift_id: str = "",
+    gift_id_encrypt_hash: str = "",
     order_id: str = "",
 ) -> Optional[GiftClaim]:
+    """按 hash / gift_id 精确查找；order_id 不参与新格式幂等。"""
     gift_id = _normalize(gift_id)
-    order_id = _normalize(order_id)
-    claims = _find_matching_claims(db, gift_id=gift_id, order_id=order_id)
-    if len(claims) > 1 and len({claim.id for claim in claims}) > 1:
-        raise HTTPException(status_code=409, detail="gift_id 与 order_id 命中了不同领取记录")
-    return claims[0] if claims else None
+    encrypt_hash = _normalize_encrypt_hash(gift_id_encrypt_hash)
+    # order_id retained in signature for API compatibility; intentionally unused.
+    _ = _normalize(order_id)
+
+    by_hash = None
+    by_gift = None
+    if encrypt_hash:
+        by_hash = (
+            db.query(GiftClaim)
+            .filter(GiftClaim.gift_id_encrypt_hash == encrypt_hash)
+            .first()
+        )
+    if gift_id:
+        by_gift = (
+            db.query(GiftClaim)
+            .filter(GiftClaim.gift_id == gift_id)
+            .first()
+        )
+
+    if by_hash and by_gift and by_hash.id != by_gift.id:
+        raise HTTPException(
+            status_code=409,
+            detail="gift_id 与 gift_id_encrypt_hash 命中了不同领取记录",
+        )
+    return by_hash or by_gift
 
 
 def serialize_gift_claim(
@@ -75,6 +88,7 @@ def serialize_gift_claim(
         ),
         "account_id": claim.account_id,
         "gift_id": claim.gift_id,
+        "gift_id_encrypt_hash": claim.gift_id_encrypt_hash,
         "order_id": claim.source_order_id,
         "coupon_code": coupon_code,
         "coupon_query_status": claim.coupon_query_status,
@@ -92,7 +106,11 @@ def _upsert_order_projection(
     claim: GiftClaim,
     request: GiftClaimSaveRequest,
     now: datetime,
-) -> Order:
+) -> Optional[Order]:
+    # encrypt-only 且尚无明文 gift_id 时，不创建 orders 投影，避免共享 orderId 碰撞。
+    if not claim.gift_id:
+        return None
+
     order_key = _normalize(request.order_id) or claim.gift_id
     order = (
         db.query(Order)
@@ -139,12 +157,12 @@ def _upsert_order_projection(
 def _upsert_coupon_projection(
     db: Session,
     claim: GiftClaim,
-    order: Order,
+    order: Optional[Order],
     request: GiftClaimSaveRequest,
     now: datetime,
 ) -> Optional[Coupon]:
     coupon_code = _normalize(request.coupon_code)
-    if not coupon_code:
+    if not coupon_code or not order:
         return None
 
     coupon = (
@@ -210,14 +228,15 @@ def save_gift_claim(
     db: Session,
     request: GiftClaimSaveRequest,
 ) -> dict:
-    gift_id = _normalize(request.gift_id)
+    gift_id = _normalize(request.gift_id) or None
+    encrypt_hash = _normalize_encrypt_hash(request.gift_id_encrypt_hash) or None
     source_order_id = _normalize(request.order_id) or None
     coupon_code = _normalize(request.coupon_code) or None
     gift_type = _normalize(request.gift_type).lower() or "meituan"
     data_source = _normalize(request.data_source) or "wxbot_gift_submit"
 
-    if not gift_id:
-        raise HTTPException(status_code=400, detail="gift_id is required")
+    if not gift_id and not encrypt_hash:
+        raise HTTPException(status_code=400, detail="gift_id 或 gift_id_encrypt_hash 至少一项")
     if gift_type not in ("meituan", "live"):
         raise HTTPException(status_code=400, detail="gift_type 必须是 meituan 或 live")
 
@@ -225,7 +244,12 @@ def save_gift_claim(
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    claim = find_gift_claim(db, gift_id=gift_id, order_id=source_order_id or "")
+    claim = find_gift_claim(
+        db,
+        gift_id=gift_id or "",
+        gift_id_encrypt_hash=encrypt_hash or "",
+        order_id="",
+    )
     if claim and claim.account_id != request.account_id:
         return serialize_gift_claim(
             claim,
@@ -237,6 +261,7 @@ def save_gift_claim(
     if claim is None:
         claim = GiftClaim(
             gift_id=gift_id,
+            gift_id_encrypt_hash=encrypt_hash,
             source_order_id=source_order_id,
             account_id=request.account_id,
             coupon_code=coupon_code,
@@ -253,7 +278,12 @@ def save_gift_claim(
             db.flush()
         except IntegrityError:
             db.rollback()
-            existing = find_gift_claim(db, gift_id=gift_id, order_id=source_order_id or "")
+            existing = find_gift_claim(
+                db,
+                gift_id=gift_id or "",
+                gift_id_encrypt_hash=encrypt_hash or "",
+                order_id="",
+            )
             if existing:
                 return serialize_gift_claim(
                     existing,
@@ -262,6 +292,10 @@ def save_gift_claim(
             raise
         _increment_account_claim_count(db, account.id, gift_type, now)
     else:
+        if gift_id and not claim.gift_id:
+            claim.gift_id = gift_id
+        if encrypt_hash and not claim.gift_id_encrypt_hash:
+            claim.gift_id_encrypt_hash = encrypt_hash
         claim.source_order_id = claim.source_order_id or source_order_id
         claim.title = request.title or claim.title
         claim.raw_data = request.raw_data or claim.raw_data
@@ -277,8 +311,9 @@ def save_gift_claim(
         claim.coupon_code = coupon.coupon_code
         claim.coupon_query_status = SUCCESS_QUERY_STATUS
         claim.coupon_queried_at = now
-        order.coupon_query_status = SUCCESS_QUERY_STATUS
-    else:
+        if order:
+            order.coupon_query_status = SUCCESS_QUERY_STATUS
+    elif order:
         order.coupon_query_status = claim.coupon_query_status
 
     db.commit()

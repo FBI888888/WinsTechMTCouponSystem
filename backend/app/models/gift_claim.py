@@ -10,8 +10,9 @@ class GiftClaim(Base):
     __tablename__ = "gift_claims"
 
     id = Column(Integer, primary_key=True, index=True)
-    gift_id = Column(String(50), nullable=False, unique=True)
-    source_order_id = Column(String(50), nullable=True, unique=True)
+    gift_id = Column(String(50), nullable=True, unique=True)
+    gift_id_encrypt_hash = Column(String(64), nullable=True, unique=True, index=True)
+    source_order_id = Column(String(50), nullable=True, index=True)
     account_id = Column(Integer, ForeignKey("mt_accounts.id"), nullable=False, index=True)
     order_db_id = Column(Integer, ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
     coupon_id = Column(Integer, ForeignKey("coupons.id", ondelete="SET NULL"), nullable=True, index=True)

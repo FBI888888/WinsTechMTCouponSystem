@@ -139,7 +139,8 @@ CREATE TABLE IF NOT EXISTS `coupons` (
 -- =====================================================
 CREATE TABLE IF NOT EXISTS `gift_claims` (
     `id` INT NOT NULL AUTO_INCREMENT,
-    `gift_id` VARCHAR(50) NOT NULL COMMENT '礼物单号/明文giftId',
+    `gift_id` VARCHAR(50) DEFAULT NULL COMMENT '明文 giftId，解析后回填；encrypt-only 时可为空',
+    `gift_id_encrypt_hash` CHAR(64) DEFAULT NULL COMMENT 'SHA256(normalized giftIdEncrypt) hex，新格式幂等键',
     `source_order_id` VARCHAR(50) DEFAULT NULL COMMENT '礼物卡片来源orderId',
     `account_id` INT NOT NULL COMMENT '首次成功领取账号，后续不可切换',
     `order_db_id` INT DEFAULT NULL COMMENT '投影到orders后的主键',
@@ -156,7 +157,8 @@ CREATE TABLE IF NOT EXISTS `gift_claims` (
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (`id`),
     UNIQUE KEY `uq_gift_claims_gift_id` (`gift_id`),
-    UNIQUE KEY `uq_gift_claims_source_order_id` (`source_order_id`),
+    UNIQUE KEY `uq_gift_claims_encrypt_hash` (`gift_id_encrypt_hash`),
+    INDEX `idx_gift_claims_source_order_id` (`source_order_id`),
     INDEX `idx_gift_claims_account_id` (`account_id`),
     INDEX `idx_gift_claims_order_db_id` (`order_db_id`),
     INDEX `idx_gift_claims_coupon_id` (`coupon_id`),
