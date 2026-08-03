@@ -2,12 +2,13 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm.attributes import flag_modified
 import httpx
 from app.database import get_db
 from app.models.user import User
 from app.models.account import MTAccount, AccountStatus
+from app.models.gift_claim import GiftClaim
 from app.models.log import OperationLog
 from app.schemas.account import (
     AccountCreate, AccountUpdate, AccountResponse,
@@ -25,6 +26,14 @@ def _normalize_platform(value: Optional[str], fallback: str = "android") -> str:
     if key in {"android", "windows", "ios", "harmony"}:
         return key
     return fallback
+
+
+def _parse_account_status(value: Optional[str]) -> AccountStatus:
+    if value == AccountStatus.NORMAL.value:
+        return AccountStatus.NORMAL
+    if value == AccountStatus.INVALID.value:
+        return AccountStatus.INVALID
+    return AccountStatus.UNCHECKED
 
 
 def _encrypt_account_token(token: str) -> str:
@@ -80,6 +89,39 @@ def _clear_account_cooldown(account: MTAccount, gift_type: Optional[str]):
         account.cooldown_until_live = None
 
 
+def _attach_today_claim_counts(db: Session, accounts: list) -> None:
+    account_ids = [account.id for account in accounts]
+    for account in accounts:
+        account.today_meituan_claim_count = 0
+        account.today_live_claim_count = 0
+    if not account_ids:
+        return
+
+    today_start = datetime.combine(datetime.now().date(), datetime.min.time())
+    tomorrow_start = today_start + timedelta(days=1)
+    rows = (
+        db.query(
+            GiftClaim.account_id,
+            GiftClaim.gift_type,
+            func.count(GiftClaim.id),
+        )
+        .filter(
+            GiftClaim.account_id.in_(account_ids),
+            GiftClaim.claimed_at >= today_start,
+            GiftClaim.claimed_at < tomorrow_start,
+        )
+        .group_by(GiftClaim.account_id, GiftClaim.gift_type)
+        .all()
+    )
+    counts = {
+        (int(account_id), str(gift_type or "meituan")): int(count or 0)
+        for account_id, gift_type, count in rows
+    }
+    for account in accounts:
+        account.today_meituan_claim_count = counts.get((account.id, "meituan"), 0)
+        account.today_live_claim_count = counts.get((account.id, "live"), 0)
+
+
 @router.get("", response_model=List[AccountResponse])
 def get_accounts(
     skip: int = 0,
@@ -96,6 +138,7 @@ def get_accounts(
         query = query.filter(MTAccount.status == status_filter)
 
     accounts = query.offset(skip).limit(limit).all()
+    _attach_today_claim_counts(db, accounts)
 
     # 解密 Token 后返回
     for account in accounts:
@@ -159,14 +202,6 @@ def capture_account(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # 将前端传入的 status 字符串转换为 AccountStatus 枚举
-    def parse_status(status_str: str):
-        if status_str == "normal":
-            return AccountStatus.NORMAL
-        elif status_str == "invalid":
-            return AccountStatus.INVALID
-        return AccountStatus.UNCHECKED
-
     # Check if userid already exists
     existing = db.query(MTAccount).filter(MTAccount.userid == request.userid).first()
     if existing:
@@ -182,7 +217,7 @@ def capture_account(
             existing.platform = _normalize_platform(request.platform, existing.platform or "android")
             flag_modified(existing, "platform")
         if request.status:
-            existing.status = parse_status(request.status)
+            existing.status = _parse_account_status(request.status)
             existing.last_check_time = datetime.now()
         db.add(existing)
         db.commit()
@@ -202,7 +237,7 @@ def capture_account(
         open_id=request.open_id,
         open_id_cipher=request.open_id_cipher,
         platform=platform_value,
-        status=parse_status(request.status) if request.status else AccountStatus.UNCHECKED
+        status=_parse_account_status(request.status) if request.status else AccountStatus.UNCHECKED
     )
     if request.status:
         db_account.last_check_time = datetime.now()
@@ -322,6 +357,9 @@ def update_account(
             value = _encrypt_account_token(value)
         if field == "platform":
             value = _normalize_platform(value, db_account.platform or "android")
+        if field == "status":
+            value = _parse_account_status(value)
+            db_account.last_check_time = datetime.now()
         setattr(db_account, field, value)
         if field == "platform":
             flag_modified(db_account, "platform")
