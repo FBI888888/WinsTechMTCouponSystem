@@ -359,11 +359,21 @@ function AccountPage() {
 
     try {
       const response = await accountsApi.capture(newAccount)
+      let savedAccount = response.data
+
+      // 兼容旧版 capture 接口：若返回的仍是旧状态，执行与手动检测相同的状态更新。
+      if (savedAccount?.id && status !== 'unchecked' && savedAccount.status !== status) {
+        const statusResponse = await accountsApi.update(savedAccount.id, { status })
+        savedAccount = statusResponse.data || { ...savedAccount, status }
+      }
+
       // 以用户本次选择的平台为准（避免接口默认 windows / 旧缓存覆盖）
-      if (response.data) {
+      if (savedAccount) {
         const updatedAccount = {
-          ...response.data,
-          platform
+          ...savedAccount,
+          platform,
+          // 列表立即采用本次检测结果，不再保留更新前的 invalid 状态。
+          status
         }
         const existingIndex = accounts.findIndex(a => a.id === updatedAccount.id || a.userid === updatedAccount.userid)
         if (existingIndex >= 0) {
