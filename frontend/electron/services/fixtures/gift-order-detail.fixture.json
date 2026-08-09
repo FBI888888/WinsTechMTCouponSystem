@@ -1,0 +1,54 @@
+{
+  "data": {
+    "nodeDataMap": {
+      "CouponModule1": {
+        "p": {
+          "coupons": [
+            {
+              "id": "2260313891825",
+              "encode": "032569425692",
+              "code": "032569425692",
+              "useStatus": 1,
+              "statusText": "待好友领取",
+              "giftExtra": {
+                "giftId": "22603138918251785391837",
+                "giftStatus": 0,
+                "cardUrl": "https://p0.meituan.net/ingee/44fd6c58fe615fc05ee947abb14bd09b674435.png",
+                "wish": "一起共赴，三餐四季！",
+                "shareTitle": "您有一份来自好友的美团美食赠礼，请查收！",
+                "deliverTime": 1785391837
+              }
+            },
+            {
+              "id": "2260313891925",
+              "encode": "032521425323",
+              "code": "032521425323",
+              "useStatus": 1,
+              "statusText": "待好友领取",
+              "giftExtra": {
+                "giftId": "22603138919251785391831",
+                "giftStatus": 0,
+                "cardUrl": "https://p0.meituan.net/ingee/44fd6c58fe615fc05ee947abb14bd09b674435.png",
+                "wish": "一起共赴，三餐四季！",
+                "shareTitle": "您有一份来自好友的美团美食赠礼，请查收！",
+                "deliverTime": 1785391831
+              }
+            }
+          ]
+        },
+        "repeatedNode": {
+          "coupons": [
+            {
+              "code": "032569425692",
+              "statusText": "待好友领取",
+              "giftExtra": {
+                "giftId": "22603138918251785391837",
+                "giftStatus": 0
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -11,6 +11,7 @@ import os
 from datetime import datetime
 from typing import Optional, List
 from sqlalchemy.orm import Session
+from sqlalchemy.orm import object_session
 from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError
 
@@ -57,10 +58,49 @@ class ScheduledTaskService:
         """
         try:
             from app.services.meituan.api import MeituanAPI
+            from app.services.native_credentials import (
+                native_credentials_stale,
+                refresh_existing_native_account,
+            )
+
+            is_native = account.credential_source == "native"
+            missing_native_identity = is_native and not all((
+                account.userid,
+                account.open_id,
+                account.open_id_cipher,
+                account.csecuuid or account.login_uuid,
+            ))
+            refreshed_before_check = False
+            if is_native and (missing_native_identity or native_credentials_stale(account)):
+                refreshed_before_check = await refresh_existing_native_account(account.id)
+                session = object_session(account)
+                if session:
+                    session.expire(account)
+                    session.refresh(account)
+
             token = get_decrypted_token(account)
             result = await MeituanAPI.check_token_status(account.userid, token)
             code = result.get("code", -1)
-            return code == 0
+            if code == 0:
+                return True
+
+            # A clearly invalid Native token gets one credential refresh and
+            # exactly one retry. If the proactive stale refresh already
+            # succeeded, its token was the one just checked, so do not reuse a
+            # one-time code or loop indefinitely.
+            if is_native and not refreshed_before_check:
+                refreshed = await refresh_existing_native_account(account.id)
+                session = object_session(account)
+                if session:
+                    session.expire(account)
+                    session.refresh(account)
+                if refreshed:
+                    retry = await MeituanAPI.check_token_status(
+                        account.userid,
+                        get_decrypted_token(account),
+                    )
+                    return retry.get("code", -1) == 0
+            return False
         except Exception as e:
             logger.error(f"Check account {account.userid} validity error: {e}")
             return False
@@ -529,9 +569,13 @@ class ScheduledTaskService:
         if account:
             options["userId"] = account.userid or ""
             options["openId"] = account.open_id or ""
-            options["unionId"] = ""
-            options["uuid"] = account.csecuuid or ""
+            options["openIdCipher"] = account.open_id_cipher or ""
+            options["unionId"] = account.union_id or ""
+            options["unionIdCipher"] = account.union_id_cipher or ""
+            options["uuid"] = account.login_uuid or account.csecuuid or ""
+            options["finger"] = decrypt_token(account.wechat_fingerprint or "")
             options["platform"] = account.platform or "android"
+            options["credentialSource"] = account.credential_source or "legacy"
 
         try:
             result = await self._call_node_worker(

@@ -63,7 +63,20 @@ class Settings(BaseSettings):
     TOKEN_ENCRYPTION_ENABLED: bool = False
     ENCRYPTION_KEY: str = ""
 
-    @field_validator("DEBUG", "RATE_LIMIT_ENABLED", "TOKEN_ENCRYPTION_ENABLED", mode="before")
+    # Native account integration (wxcode_service OpenAPI)
+    WXCODE_SERVICE_URL: str = ""
+    WXCODE_SERVICE_API_KEY: str = ""
+    NATIVE_ACCOUNT_ENABLED: bool = False
+    NATIVE_CREDENTIAL_MAX_AGE_HOURS: int = 12
+    NATIVE_REFRESH_DEADLINE_SECONDS: int = 420
+
+    @field_validator(
+        "DEBUG",
+        "RATE_LIMIT_ENABLED",
+        "TOKEN_ENCRYPTION_ENABLED",
+        "NATIVE_ACCOUNT_ENABLED",
+        mode="before",
+    )
     @classmethod
     def parse_bool_like_values(cls, value):
         return _coerce_bool_like(value)

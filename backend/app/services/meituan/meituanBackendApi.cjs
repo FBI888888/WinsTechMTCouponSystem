@@ -14,7 +14,9 @@ const {
   getPlatformConfig,
 } = require('./platformConfig.cjs')
 
-const GIFT_REQUEST_PROFILE = Object.freeze({
+// Compatibility defaults for historical capture accounts only. Native
+// accounts never inherit identity values from this profile.
+const LEGACY_REQUEST_PROFILE = Object.freeze({
   cityId: '795',
   appVersion: '10.13.4',
   uuid: '19b373b4485c8-6002391ccec5e4-0-0-19b373b4485c8',
@@ -23,6 +25,39 @@ const GIFT_REQUEST_PROFILE = Object.freeze({
   rcfUniqueId: 'rcf49e2.49cc1e183816a.83cc0e339-adf9.f2cae2b95-84c5.8550adc46-0a59.6446ca0ec-1872.392ddd3ee-default-1775211828231',
   rcfToken: '5cac67121c9d446c8c2d7b93'
 })
+const GIFT_REQUEST_PROFILE = LEGACY_REQUEST_PROFILE
+
+function resolveAccountRequestOptions(options = {}) {
+  const isNative = String(options.credentialSource || '').toLowerCase() === 'native'
+  const legacyValue = (name, profileName) => {
+    const own = options[name]
+    if (own !== undefined && own !== null && String(own) !== '') return own
+    return isNative ? '' : LEGACY_REQUEST_PROFILE[profileName]
+  }
+  return {
+    ...options,
+    uuid: legacyValue('uuid', 'uuid'),
+    openId: legacyValue('openId', 'openId'),
+    finger: legacyValue('finger', 'finger'),
+    unionId: options.unionId || '',
+    openIdCipher: options.openIdCipher || '',
+    unionIdCipher: options.unionIdCipher || '',
+  }
+}
+
+function applyAccountCredentialHeaders(headers, options) {
+  const mappings = {
+    openid: options.openId,
+    openidcipher: options.openIdCipher,
+    unionid: options.unionId,
+    unionidcipher: options.unionIdCipher,
+    csecuuid: options.uuid,
+  }
+  for (const [name, value] of Object.entries(mappings)) {
+    if (value) headers[name] = String(value)
+  }
+  return headers
+}
 
 const BACKEND_API_DEBUG = process.env.MEITUAN_BACKEND_DEBUG === '1'
 
@@ -274,9 +309,9 @@ function buildCommonParams({ token, uuid, finger, userId, openId, unionId, cityI
       userId: userId || '',
       token,
       uuid,
-      openId: openId || GIFT_REQUEST_PROFILE.openId,
+      openId: openId || '',
       wxUnionId: unionId || '',
-      uuidV2: openId || GIFT_REQUEST_PROFILE.openId
+      uuidV2: openId || ''
     },
     cityInfo: {
       cityId: cityId || GIFT_REQUEST_PROFILE.cityId,
@@ -390,6 +425,7 @@ async function resolveGiftIdFromReceivePreview({ token, giftIdEncrypt, orderId, 
  * 获取订单券码信息（普通单走轻量 payload，礼物单走专用逻辑；对齐 mt-qrcode-web）
  */
 async function getCouponList(token, orderId, options = {}) {
+  options = resolveAccountRequestOptions(options)
   const orderIdStr = String(orderId)
   const giftIdEncrypt = firstNonEmpty(
     options.giftIdEncrypt,
@@ -435,6 +471,11 @@ async function getNormalCouponList(token, orderIdStr, options = {}) {
       programName: 'mt',
       mina_name: 'mt-weapp',
       token,
+      userId: options.userId || '',
+      openId: options.openId,
+      unionId: options.unionId,
+      uuid: options.uuid,
+      finger: options.finger,
       utmMedium: 'WEIXINPROGRAM',
       appVersion: '9.27.2',
       envPlatform: 'wx',
@@ -448,9 +489,16 @@ async function getNormalCouponList(token, orderIdStr, options = {}) {
     },
     commonParams: {
       location: locationObj,
-      userInfo: { token },
+      userInfo: {
+        userId: options.userId || '',
+        token,
+        uuid: options.uuid,
+        openId: options.openId,
+        wxUnionId: options.unionId,
+        uuidV2: options.openId,
+      },
       cityInfo: { cityId: '795', locCityId: '795' },
-      fingerprint: { fingerprint: '' },
+      fingerprint: { fingerprint: options.finger },
       systemInfo: {
         version: '',
         systemVersion: '',
@@ -644,6 +692,7 @@ async function getNormalCouponList(token, orderIdStr, options = {}) {
  * 礼物订单查券（保留完整字段）
  */
 async function getGiftCouponList(token, giftId, options = {}) {
+  options = resolveAccountRequestOptions(options)
   const giftIdInput = String(giftId || '')
   const giftIdEncrypt = firstNonEmpty(
     options.giftIdEncrypt,
@@ -662,9 +711,9 @@ async function getGiftCouponList(token, giftId, options = {}) {
   const cfg = getPlatformConfig(platform)
   const baseUrl = `https://apimobile.meituan.com/foodtrade/order/api/detail/preview?duo_csdk_v=1&page_protocol_version=0001&pre_trace_id=&token=${token}&yodaReady=h5&csecplatform=4&csecversion=4.0.2`
 
-  const uuid = options.uuid || GIFT_REQUEST_PROFILE.uuid
-  const finger = options.finger || GIFT_REQUEST_PROFILE.finger
-  const openId = options.openId || GIFT_REQUEST_PROFILE.openId
+  const uuid = options.uuid
+  const finger = options.finger
+  const openId = options.openId
 
   debugLog(
     `[Backend API] getGiftCouponList giftId=${resolvedGiftId || giftIdInput}, platform=${platform}`
@@ -737,6 +786,8 @@ async function getGiftCouponList(token, giftId, options = {}) {
     'Accept-Language': 'zh-CN,zh;q=0.9',
     'Content-Type': 'application/json',
   }
+  applyAccountCredentialHeaders(headers, options)
+  applyAccountCredentialHeaders(headers, options)
 
   try {
     if (!resolvedGiftId && giftIdEncrypt) {

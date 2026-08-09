@@ -344,8 +344,13 @@ ipcMain.handle('rebate-query-one', async (event, { account, orderId, giftIdEncry
       longitude: account.longitude,
       latitude: account.latitude,
       userId: account.userid,
-      openId: account.openId,
-      uuid: account.csecuuid || '',
+      openId: account.openId || account.open_id || '',
+      openIdCipher: account.openIdCipher || account.open_id_cipher || '',
+      unionId: account.unionId || account.union_id || '',
+      unionIdCipher: account.unionIdCipher || account.union_id_cipher || '',
+      uuid: account.loginUuid || account.login_uuid || account.csecuuid || '',
+      finger: account.finger || '',
+      credentialSource: account.credentialSource || account.credential_source || 'legacy',
       platform: account.platform || 'android',
       giftIdEncrypt: giftIdEncrypt || account.giftIdEncrypt || account.gift_id_encrypt || ''
     })

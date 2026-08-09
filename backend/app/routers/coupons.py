@@ -37,6 +37,16 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+def _is_explicit_token_failure(result: dict) -> bool:
+    code = str(result.get("code") or result.get("errorCode") or "").strip()
+    if code in {"401", "TOKEN_INVALID", "LOGIN_REQUIRED"}:
+        return True
+    message = str(result.get("error") or result.get("message") or "").lower()
+    return any(marker in message for marker in (
+        "token invalid", "token expired", "token失效", "登录失效", "请先登录", "login required",
+    ))
+
+
 async def call_meituan_api(token: str, order_id: str, options: dict = None) -> dict:
     """调用 Node.js 脚本查询美团API"""
     if options is None:
@@ -165,14 +175,47 @@ async def _query_coupons_backend_grouped(
 
         try:
             api_call_attempts += 1
+            if account.credential_source == "native":
+                from app.services.native_credentials import (
+                    native_credentials_stale,
+                    refresh_existing_native_account,
+                )
+                if native_credentials_stale(account):
+                    await refresh_existing_native_account(account.id)
+                    db.expire(account)
+                    db.refresh(account)
             decrypted_token = decrypt_token(account.token)
             options = {
                 "userId": account.userid or "",
                 "openId": account.open_id or "",
-                "uuid": account.csecuuid or "",
+                "openIdCipher": account.open_id_cipher or "",
+                "unionId": account.union_id or "",
+                "unionIdCipher": account.union_id_cipher or "",
+                "uuid": account.login_uuid or account.csecuuid or "",
+                "finger": decrypt_token(account.wechat_fingerprint or ""),
+                "credentialSource": account.credential_source or "legacy",
                 "platform": account.platform or "android",
             }
             api_result = await call_meituan_api(decrypted_token, query_order_id, options)
+            if account.credential_source == "native" and _is_explicit_token_failure(api_result):
+                from app.services.native_credentials import refresh_existing_native_account
+                if await refresh_existing_native_account(account.id):
+                    db.expire(account)
+                    db.refresh(account)
+                    options.update({
+                        "userId": account.userid or "",
+                        "openId": account.open_id or "",
+                        "openIdCipher": account.open_id_cipher or "",
+                        "unionId": account.union_id or "",
+                        "unionIdCipher": account.union_id_cipher or "",
+                        "uuid": account.login_uuid or account.csecuuid or "",
+                        "finger": decrypt_token(account.wechat_fingerprint or ""),
+                    })
+                    api_result = await call_meituan_api(
+                        decrypt_token(account.token),
+                        query_order_id,
+                        options,
+                    )
         except Exception as exc:
             order_api_context[order_id] = {
                 "status": "error",
@@ -589,10 +632,13 @@ def query_coupons(
             gift_id=coupon.gift_id,
             # 账号信息
             userid=account.userid,
-            token=account.token,
-            csecuuid=account.csecuuid,
+            token=decrypt_token(account.token),
+            csecuuid=account.login_uuid or account.csecuuid,
             open_id=account.open_id,
             open_id_cipher=account.open_id_cipher,
+            union_id=account.union_id,
+            union_id_cipher=account.union_id_cipher,
+            credential_source=account.credential_source or "legacy",
             platform=account.platform or "android",
             # 已有的券码状态
             coupon_status=coupon.coupon_status,

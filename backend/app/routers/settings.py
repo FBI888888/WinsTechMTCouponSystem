@@ -8,8 +8,17 @@ from app.models.user import User
 from app.models.config import SystemConfig
 from app.deps import get_current_admin_user
 from app.services.notification import WechatNotifier
+from app.services.native_integration_config import NATIVE_CONFIG_KEYS
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+
+def _reject_reserved_native_key(config_key: str) -> None:
+    if config_key in NATIVE_CONFIG_KEYS:
+        raise HTTPException(
+            status_code=400,
+            detail="Native 调度配置只能通过专用配置接口管理",
+        )
 
 
 class ConfigItem(BaseModel):
@@ -35,7 +44,9 @@ def get_configs(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
-    query = db.query(SystemConfig)
+    query = db.query(SystemConfig).filter(
+        ~SystemConfig.config_key.in_(NATIVE_CONFIG_KEYS)
+    )
     if category:
         query = query.filter(SystemConfig.category == category)
     if include_public_only:
@@ -49,6 +60,7 @@ def get_config(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
+    _reject_reserved_native_key(config_key)
     config = db.query(SystemConfig).filter(SystemConfig.config_key == config_key).first()
     if not config:
         raise HTTPException(status_code=404, detail="Config not found")
@@ -62,6 +74,7 @@ def update_config(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
+    _reject_reserved_native_key(config_key)
     db_config = db.query(SystemConfig).filter(SystemConfig.config_key == config_key).first()
     if not db_config:
         db_config = SystemConfig(config_key=config_key)
@@ -83,6 +96,7 @@ def create_config(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
+    _reject_reserved_native_key(config.config_key)
     existing = db.query(SystemConfig).filter(SystemConfig.config_key == config.config_key).first()
     if existing:
         raise HTTPException(status_code=400, detail="Config key already exists")
@@ -106,6 +120,7 @@ def delete_config(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
+    _reject_reserved_native_key(config_key)
     config = db.query(SystemConfig).filter(SystemConfig.config_key == config_key).first()
     if not config:
         raise HTTPException(status_code=404, detail="Config not found")

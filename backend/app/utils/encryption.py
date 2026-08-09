@@ -3,6 +3,7 @@ Token 加密工具
 用于敏感信息的加密存储
 """
 import base64
+import binascii
 import os
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
@@ -39,7 +40,14 @@ class TokenEncryption:
         if not key:
             key = self._derive_key_from_secret(settings.SECRET_KEY)
         else:
-            if len(key) < 32:
+            try:
+                decoded = base64.urlsafe_b64decode(key.encode("ascii"))
+                if len(decoded) != 32:
+                    raise ValueError("not a Fernet key")
+                key = key.encode("ascii")
+            except (ValueError, UnicodeEncodeError, binascii.Error):
+                # Accept a stable passphrase of any length and derive a valid
+                # Fernet key. A real 44-character Fernet key is used directly.
                 key = self._derive_key_from_secret(key)
 
         self._fernet = Fernet(key)

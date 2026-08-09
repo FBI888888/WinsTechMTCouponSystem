@@ -23,6 +23,18 @@ class MTAccount(Base):
     csecuuid = Column(String(100))
     open_id = Column(String(100))
     open_id_cipher = Column(String(255))
+    union_id = Column(String(100))
+    union_id_cipher = Column(Text)
+    credential_source = Column(String(16), nullable=False, default="legacy", index=True)
+    native_instance_id = Column(String(64), nullable=True, index=True)
+    native_instance_code = Column(String(24), nullable=True, unique=True, index=True)
+    native_instance_name = Column(String(255), nullable=True)
+    native_agent_name = Column(String(120), nullable=True)
+    login_uuid = Column(String(100), nullable=True)
+    wechat_fingerprint = Column(Text, nullable=True)
+    credential_refreshed_at = Column(DateTime, nullable=True, index=True)
+    credential_refresh_status = Column(String(20), nullable=False, default="idle", index=True)
+    credential_refresh_error = Column(String(500), nullable=True)
     platform = Column(String(20), nullable=False, default="windows")  # android/windows/ios/harmony
     status = Column(Enum(AccountStatus, values_callable=lambda obj: [e.value for e in obj]), default=AccountStatus.UNCHECKED, index=True)
     disabled = Column(Integer, default=0, index=True)  # 0=启用, 1=禁用

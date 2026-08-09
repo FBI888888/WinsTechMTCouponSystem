@@ -6,6 +6,7 @@ import { useToastStore } from '../stores/toastStore'
 import { getErrorMessage, isAbortError } from '../utils/requestFeedback'
 import { createErrorQueryResult, createSuccessQueryResult, QUERY_RESULT_STATUS, stripPlaceholderCoupons } from '../utils/queryResult'
 import CouponQueryResultDialog from '../components/CouponQueryResultDialog'
+import { accountToElectronPayload } from '../utils/meituanCredential'
 
 function CouponQueryPage() {
   const {
@@ -107,14 +108,7 @@ function CouponQueryPage() {
       }
 
       const meituanResult = await window.electronAPI.rebateQueryOne({
-        account: {
-          userid: account.userid,
-          token: account.token,
-          csecuuid: account.csecuuid || '',
-          openId: account.open_id || '',
-          openIdCipher: account.open_id_cipher || '',
-          platform: account.platform || 'android'
-        },
+        account: accountToElectronPayload(account),
         orderId: queryOrderId,
         isGiftId
       })
@@ -288,14 +282,7 @@ function CouponQueryPage() {
           const queryOrderId = isGiftId ? idStr : item.order_view_id
 
           const meituanResult = await window.electronAPI.rebateQueryOne({
-            account: {
-              userid: item.userid,
-              token: item.token,
-              csecuuid: item.csecuuid || '',
-              openId: item.open_id || '',
-              openIdCipher: item.open_id_cipher || '',
-              platform: item.platform || 'android'
-            },
+            account: accountToElectronPayload(item),
             orderId: queryOrderId,
             isGiftId: isGiftId
           })

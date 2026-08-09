@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { Plus, Trash2, Download, Upload, Search, RefreshCw, Radio, ShieldOff } from 'lucide-react'
+import { Plus, Trash2, Download, Upload, Search, RefreshCw, Radio, ShieldOff, Monitor, Unlink } from 'lucide-react'
 import { accountsApi } from '../api'
 import { useDataStore } from '../stores/dataStore'
 import { useToastStore } from '../stores/toastStore'
@@ -45,6 +45,14 @@ function AccountPage() {
   const [scanningAccountId, setScanningAccountId] = useState(null)
   const [checkingAccountId, setCheckingAccountId] = useState(null)  // 正在检查的账号ID
   const [riskCheckingAccountId, setRiskCheckingAccountId] = useState(null)  // 正在风控检测的账号ID
+  const [nativeInstances, setNativeInstances] = useState([])
+  const [nativeInstancesLoading, setNativeInstancesLoading] = useState(false)
+  const [nativeInstanceCode, setNativeInstanceCode] = useState('')
+  const [nativeAccountId, setNativeAccountId] = useState('')
+  const [nativeRemark, setNativeRemark] = useState('')
+  const [nativeJob, setNativeJob] = useState(null)
+  const [nativeBusy, setNativeBusy] = useState(false)
+  const nativeMountedRef = useRef(true)
 
   // 扫描对话框状态
   const [scanDialogOpen, setScanDialogOpen] = useState(false)
@@ -74,6 +82,117 @@ function AccountPage() {
   useEffect(() => {
     loadAccounts()
   }, [])
+
+  useEffect(() => () => {
+    nativeMountedRef.current = false
+  }, [])
+
+  const loadNativeInstances = async () => {
+    setNativeInstancesLoading(true)
+    try {
+      const response = await accountsApi.getNativeInstances()
+      const values = Array.isArray(response.data) ? response.data : []
+      setNativeInstances(values)
+      if (!nativeInstanceCode && values.length) setNativeInstanceCode(values[0].instance_code)
+    } catch (error) {
+      setNativeInstances([])
+      const detail = error.response?.data?.detail
+      const message = typeof detail === 'object' ? detail.message : detail
+      if (message) toast.error(`Native 实例加载失败：${message}`)
+    } finally {
+      setNativeInstancesLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadNativeInstances()
+  }, [])
+
+  const nativeInstanceGroups = useMemo(() => {
+    const groups = new Map()
+    for (const instance of nativeInstances) {
+      const key = instance.agent_name || '未命名电脑'
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key).push(instance)
+    }
+    return [...groups.entries()]
+  }, [nativeInstances])
+
+  const waitForNativeJob = async (jobId) => {
+    const deadline = Date.now() + 7.5 * 60 * 1000
+    while (nativeMountedRef.current && Date.now() < deadline) {
+      const response = await accountsApi.getNativeRefreshJob(jobId)
+      const value = response.data
+      setNativeJob(value)
+      if (value.state === 'success') return value
+      if (value.state === 'failed') {
+        throw new Error(value.error_message || value.error_code || 'Native 凭据刷新失败')
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+    }
+    throw new Error('等待 Native 刷新任务超时')
+  }
+
+  const startNativeRefresh = async ({ account = null, instance = null } = {}) => {
+    const selected = instance || nativeInstances.find((item) => item.instance_code === nativeInstanceCode)
+    if (!selected) {
+      toast.warning('请选择一个已授权的 Native 实例')
+      return
+    }
+    const targetAccount = account || accounts.find((item) => item.id === Number(nativeAccountId)) || null
+    if (!targetAccount && !nativeRemark.trim()) {
+      toast.warning('新增账号时请填写备注名')
+      return
+    }
+
+    setNativeBusy(true)
+    setNativeJob({ state: 'pending', step: 'pending', instance_name: selected.name })
+    try {
+      const response = await accountsApi.createNativeRefreshJob({
+        account_id: targetAccount?.id || null,
+        remark: nativeRemark.trim() || targetAccount?.remark || '',
+        instance_id: selected.instance_id,
+        instance_code: selected.instance_code
+      })
+      const completed = await waitForNativeJob(response.data.job_id)
+      await loadAccounts(true)
+      setNativeRemark('')
+      if (!targetAccount) setNativeAccountId('')
+      toast.success(`Native 凭据已更新${completed.result_account_id ? `（账号 #${completed.result_account_id}）` : ''}`)
+    } catch (error) {
+      const detail = error.response?.data?.detail
+      const message = typeof detail === 'object' ? detail.message : detail
+      toast.error(message || error.message || 'Native 凭据刷新失败')
+    } finally {
+      setNativeBusy(false)
+    }
+  }
+
+  const removeNativeBinding = async (account) => {
+    const accepted = await confirm(
+      `解除 ${account.remark || account.userid} 的 Native 绑定？当前 token 和身份凭据会保留。`,
+      '解除 Native 绑定'
+    )
+    if (!accepted) return
+    try {
+      await accountsApi.deleteNativeBinding(account.id)
+      await loadAccounts(true)
+      toast.success('已解除 Native 绑定，账号已切回旧方式')
+    } catch (error) {
+      toast.error(error.response?.data?.detail || error.message || '解除绑定失败')
+    }
+  }
+
+  const NATIVE_STEP_LABELS = {
+    pending: '等待开始',
+    queued: '等待开始',
+    requesting_phone: '提交取手机号任务',
+    requesting_code: '提交取 code 任务',
+    waiting: '等待节点返回',
+    exchanging: '换取美团 token',
+    success: '保存账号完成',
+    failed: '刷新失败'
+  }
 
   const parseUserUrl = (urlStr) => {
     try {
@@ -304,6 +423,8 @@ function AccountPage() {
             csecuuid: account.csecuuid,
             open_id: account.openId || account.open_id,
             open_id_cipher: account.openIdCipher || account.open_id_cipher,
+            union_id: account.unionId || account.union_id,
+            union_id_cipher: account.unionIdCipher || account.union_id_cipher,
             platform: account.platform || 'android'
           })
         }
@@ -327,6 +448,8 @@ function AccountPage() {
         csecuuid: a.csecuuid,
         openId: a.open_id,
         openIdCipher: a.open_id_cipher,
+        unionId: a.union_id,
+        unionIdCipher: a.union_id_cipher,
         platform: a.platform || 'android',
         status: a.status
       }))
@@ -424,6 +547,10 @@ function AccountPage() {
   }
 
   const handleRowDoubleClick = (account) => {
+    if (account.credential_source === 'native') {
+      toast.warning('Native 账号请使用“刷新凭据”或先解除绑定后再按旧方式编辑')
+      return
+    }
     setRemark(account.remark)
     setUrl(account.url)
     setPlatform(account.platform || 'android')
@@ -783,7 +910,82 @@ function AccountPage() {
         </div>
       )}
 
-      <div className="bg-white rounded-xl shadow-sm p-4 mb-4">
+      <section className="bg-white rounded-xl shadow-sm p-4 mb-4 border border-orange-100">
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div>
+            <div className="flex items-center gap-2 font-semibold text-gray-900">
+              <Monitor className="w-5 h-5 text-orange-500" /> 添加 Native 实例账号
+            </div>
+            <p className="mt-1 text-xs text-gray-500">从统一调度中心获取手机号授权信息与最新小程序 code，成功换取 token 后才会保存账号。</p>
+          </div>
+          <button
+            type="button"
+            onClick={loadNativeInstances}
+            disabled={nativeInstancesLoading || nativeBusy}
+            className="px-3 py-2 text-xs rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200 disabled:opacity-50 flex items-center gap-1"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${nativeInstancesLoading ? 'animate-spin' : ''}`} /> 刷新实例
+          </button>
+        </div>
+        <div className="grid gap-3 lg:grid-cols-[1.4fr_1fr_1fr_auto]">
+          <select
+            value={nativeInstanceCode}
+            onChange={(event) => setNativeInstanceCode(event.target.value)}
+            disabled={nativeBusy || nativeInstancesLoading}
+            className="min-w-0 px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 disabled:bg-gray-50"
+          >
+            {!nativeInstances.length && <option value="">暂无已授权实例</option>}
+            {nativeInstanceGroups.map(([agentName, instances]) => (
+              <optgroup key={agentName} label={agentName}>
+                {instances.map((instance) => (
+                  <option key={instance.instance_id} value={instance.instance_code}>
+                    {instance.name || instance.instance_code} · {instance.state} · {instance.session_ready ? '会话就绪' : '会话未就绪'}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+          <select
+            value={nativeAccountId}
+            onChange={(event) => setNativeAccountId(event.target.value)}
+            disabled={nativeBusy}
+            className="min-w-0 px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 disabled:bg-gray-50"
+          >
+            <option value="">新建账号</option>
+            {accounts.map((account) => (
+              <option key={account.id} value={account.id}>绑定/更换：{account.remark || account.userid}</option>
+            ))}
+          </select>
+          <input
+            value={nativeRemark}
+            onChange={(event) => setNativeRemark(event.target.value)}
+            disabled={nativeBusy}
+            placeholder={nativeAccountId ? '备注可留空' : '新账号备注（必填）'}
+            className="min-w-0 px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 disabled:bg-gray-50"
+          />
+          <button
+            type="button"
+            onClick={() => startNativeRefresh()}
+            disabled={nativeBusy || !nativeInstances.length}
+            className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-50 flex items-center justify-center gap-2 whitespace-nowrap"
+          >
+            <RefreshCw className={`w-4 h-4 ${nativeBusy ? 'animate-spin' : ''}`} />
+            {nativeAccountId ? '绑定并刷新' : '添加账号'}
+          </button>
+        </div>
+        {nativeJob && (
+          <div className={`mt-3 rounded-lg px-3 py-2 text-sm ${nativeJob.state === 'failed' ? 'bg-red-50 text-red-700' : nativeJob.state === 'success' ? 'bg-green-50 text-green-700' : 'bg-blue-50 text-blue-700'}`}>
+            当前进度：{NATIVE_STEP_LABELS[nativeJob.step] || nativeJob.step || '处理中'}
+            {nativeJob.error_message ? ` · ${nativeJob.error_message}` : ''}
+          </div>
+        )}
+      </section>
+
+      <details className="bg-white rounded-xl shadow-sm mb-4">
+        <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-xl">
+          旧方式（备用）：抓包、Token 链接、导入与导出
+        </summary>
+      <div className="p-4 pt-1">
         <div className="flex gap-3 flex-wrap">
           <input
             type="text"
@@ -840,6 +1042,7 @@ function AccountPage() {
           </button>
         </div>
       </div>
+      </details>
 
       <div className="bg-white rounded-xl shadow-sm p-4 mb-4">
         <div className="flex gap-3 flex-wrap">
@@ -886,6 +1089,7 @@ function AccountPage() {
                   />
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">备注名</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">来源 / 实例</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">userId</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">平台</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">token</th>
@@ -907,6 +1111,24 @@ function AccountPage() {
                     <input type="checkbox" checked={selectedRows.has(account.id)} onChange={() => toggleRowSelection(account.id)} />
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-900">{account.remark}</td>
+                  <td className="px-4 py-3 text-sm min-w-[150px]">
+                    <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${account.credential_source === 'native' ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-600'}`}>
+                      {account.credential_source === 'native' ? 'Native' : 'Legacy'}
+                    </span>
+                    <div className="mt-1 text-xs text-gray-500 truncate max-w-[190px]" title={`${account.native_agent_name || ''} ${account.native_instance_name || ''}`}>
+                      {account.credential_source === 'native'
+                        ? `${account.native_agent_name || '未知电脑'} / ${account.native_instance_name || account.native_instance_code || '离线实例'}`
+                        : '旧凭据兼容'}
+                    </div>
+                    {account.credential_refreshed_at && (
+                      <div className="mt-0.5 text-[11px] text-gray-400">{new Date(account.credential_refreshed_at).toLocaleString()}</div>
+                    )}
+                    {account.credential_source === 'native' && account.credential_refresh_status && (
+                      <div className={`mt-0.5 text-[11px] ${account.credential_refresh_status === 'failed' ? 'text-red-500' : 'text-gray-400'}`} title={account.credential_refresh_error || ''}>
+                        刷新：{NATIVE_STEP_LABELS[account.credential_refresh_status] || account.credential_refresh_status}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-sm text-gray-500 font-mono">{account.userid}</td>
                   <td className="px-4 py-3 text-sm">
                     <span
@@ -949,6 +1171,39 @@ function AccountPage() {
                   </td>
                   <td className="px-4 py-3 text-sm">
                     <div className="flex items-center gap-2">
+                      {account.credential_source === 'native' && (
+                        <>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              startNativeRefresh({
+                                account,
+                                instance: {
+                                  instance_id: account.native_instance_id,
+                                  instance_code: account.native_instance_code,
+                                  name: account.native_instance_name,
+                                  agent_name: account.native_agent_name
+                                }
+                              })
+                            }}
+                            disabled={nativeBusy}
+                            className="px-3 py-1 text-xs bg-orange-50 text-orange-600 rounded hover:bg-orange-100 disabled:opacity-50 whitespace-nowrap"
+                          >
+                            刷新凭据
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              removeNativeBinding(account)
+                            }}
+                            disabled={nativeBusy}
+                            className="px-2 py-1 text-xs bg-gray-50 text-gray-600 rounded hover:bg-gray-100 disabled:opacity-50"
+                            title="解除 Native 绑定并保留当前凭据"
+                          >
+                            <Unlink className="w-3.5 h-3.5" />
+                          </button>
+                        </>
+                      )}
                       <button
                         onClick={(e) => {
                           e.stopPropagation()
@@ -1017,7 +1272,7 @@ function AccountPage() {
               ))}
               {filteredAccounts.length === 0 && (
                 <tr>
-                  <td colSpan="8" className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan="9" className="px-4 py-8 text-center text-gray-500">
                     {enabledFilter === 'enabled' ? '暂无启用账号' : enabledFilter === 'disabled' ? '暂无禁用账号' : '暂无账号，请添加账号'}
                   </td>
                 </tr>
@@ -1039,6 +1294,11 @@ function AccountPage() {
               const account = accounts.find(item => item.id === accountId)
               if (!account) {
                 showMessage('error', '未选择账号')
+                closeContextMenu()
+                return
+              }
+              if (account.credential_source === 'native') {
+                toast.warning('Native 账号请通过刷新任务更新身份凭据；如需旧方式编辑请先解除绑定')
                 closeContextMenu()
                 return
               }

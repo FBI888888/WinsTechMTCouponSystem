@@ -10,7 +10,9 @@ const {
   getPlatformConfig,
 } = require('./platformConfig.cjs')
 
-const GIFT_REQUEST_PROFILE = Object.freeze({
+// Compatibility defaults for historical capture accounts only. Native
+// accounts never inherit identity values from this profile.
+const LEGACY_REQUEST_PROFILE = Object.freeze({
   cityId: '795',
   appVersion: '10.13.4',
   uuid: '19b373b4485c8-6002391ccec5e4-0-0-19b373b4485c8',
@@ -19,6 +21,39 @@ const GIFT_REQUEST_PROFILE = Object.freeze({
   rcfUniqueId: 'rcf49e2.49cc1e183816a.83cc0e339-adf9.f2cae2b95-84c5.8550adc46-0a59.6446ca0ec-1872.392ddd3ee-default-1775211828231',
   rcfToken: '5cac67121c9d446c8c2d7b93'
 })
+const GIFT_REQUEST_PROFILE = LEGACY_REQUEST_PROFILE
+
+function resolveAccountRequestOptions(options = {}) {
+  const isNative = String(options.credentialSource || '').toLowerCase() === 'native'
+  const legacyValue = (name, profileName) => {
+    const own = options[name]
+    if (own !== undefined && own !== null && String(own) !== '') return own
+    return isNative ? '' : LEGACY_REQUEST_PROFILE[profileName]
+  }
+  return {
+    ...options,
+    uuid: legacyValue('uuid', 'uuid'),
+    openId: legacyValue('openId', 'openId'),
+    finger: legacyValue('finger', 'finger'),
+    unionId: options.unionId || '',
+    openIdCipher: options.openIdCipher || '',
+    unionIdCipher: options.unionIdCipher || '',
+  }
+}
+
+function applyAccountCredentialHeaders(headers, options) {
+  const mappings = {
+    openid: options.openId,
+    openidcipher: options.openIdCipher,
+    unionid: options.unionId,
+    unionidcipher: options.unionIdCipher,
+    csecuuid: options.uuid,
+  }
+  for (const [name, value] of Object.entries(mappings)) {
+    if (value) headers[name] = String(value)
+  }
+  return headers
+}
 
 // 取消标志存储
 const cancelFlags = new Map()
@@ -247,7 +282,7 @@ class MeituanAPI {
     const cityId = String(options.cityId || GIFT_REQUEST_PROFILE.cityId)
     const cfg = getPlatformConfig(options.platform)
     const userAgent = options.userAgent || cfg.userAgent
-    const openIdValue = options.openId || GIFT_REQUEST_PROFILE.openId
+    const openIdValue = options.openId || ''
     const baseUrl = `https://apimobile.meituan.com/foodtrade/gift/receive/preview?duo_csdk_v=1&page_protocol_version=0001&pre_trace_id=&token=${token}&yodaReady=h5&csecplatform=4&csecversion=4.2.0`
     const commonParams = {
       location: buildLocationObject(longitude, latitude),
@@ -541,6 +576,7 @@ class MeituanAPI {
    * @param {object} options - 可选参数 { longitude, latitude }
    */
   static async getCouponListByOrderId(token, orderid, options = {}) {
+    options = resolveAccountRequestOptions(options)
     // 确保 orderid 是字符串
     const orderIdStr = String(orderid)
     const { longitude, latitude, userId, openId, uuid } = options
@@ -565,7 +601,7 @@ class MeituanAPI {
       '经度:', longitude,
       '纬度:', latitude,
       'userId:', userId,
-      'openId:', openId
+      'openIdConfigured:', Boolean(openId)
     )
 
     if (isGift || giftIdEncrypt) {
@@ -597,6 +633,11 @@ class MeituanAPI {
         programName: "mt",
         mina_name: "mt-weapp",
         token: token,
+        userId: userId || '',
+        openId: openId || '',
+        unionId: options.unionId || '',
+        uuid: uuid || '',
+        finger: options.finger || '',
         utmMedium: "WEIXINPROGRAM",
         appVersion: "9.27.2",
         envPlatform: "wx",
@@ -610,9 +651,16 @@ class MeituanAPI {
       },
       commonParams: {
         location: locationObj,
-        userInfo: { token: token },
+        userInfo: {
+          userId: userId || '',
+          token: token,
+          uuid: uuid || '',
+          openId: openId || '',
+          wxUnionId: options.unionId || '',
+          uuidV2: openId || ''
+        },
         cityInfo: { cityId: "795", locCityId: "795" },
-        fingerprint: { fingerprint: "" },
+        fingerprint: { fingerprint: options.finger || "" },
         systemInfo: {
           version: "",
           systemVersion: "",
@@ -812,6 +860,7 @@ class MeituanAPI {
    * 获取礼物订单券码列表
    */
   static async getGiftCouponList(token, giftId, options = {}) {
+    options = resolveAccountRequestOptions(options)
     const { longitude, latitude, userId, openId, uuid } = options
     const giftIdInput = String(giftId || '')
     const giftIdEncrypt = firstNonEmpty(
@@ -827,9 +876,9 @@ class MeituanAPI {
     )
     const baseUrl = `https://apimobile.meituan.com/foodtrade/order/api/detail/preview?duo_csdk_v=1&page_protocol_version=0001&pre_trace_id=&token=${token}&yodaReady=h5&csecplatform=4&csecversion=4.0.2`
     const locationObj = buildLocationObject(longitude, latitude)
-    const finger = options.finger || GIFT_REQUEST_PROFILE.finger
-    const uuidValue = uuid || GIFT_REQUEST_PROFILE.uuid
-    const openIdValue = openId || GIFT_REQUEST_PROFILE.openId
+    const finger = options.finger
+    const uuidValue = options.uuid
+    const openIdValue = options.openId
     const platform = options.platform || DEFAULT_PLATFORM
     if (!options.platform) options.platform = platform
     const cfg = getPlatformConfig(platform)
@@ -873,7 +922,7 @@ class MeituanAPI {
           token: token,
           uuid: uuidValue,
           openId: openIdValue,
-          wxUnionId: "",
+          wxUnionId: options.unionId || "",
           uuidV2: openIdValue
         },
         cityInfo: { cityId: GIFT_REQUEST_PROFILE.cityId, locCityId: GIFT_REQUEST_PROFILE.cityId },
@@ -940,6 +989,8 @@ class MeituanAPI {
       'Accept-Language': 'zh-CN,zh;q=0.9',
       'Content-Type': 'application/json'
     }
+    applyAccountCredentialHeaders(headers, options)
+    applyAccountCredentialHeaders(headers, options)
 
     const maxRetries = 3
     let lastError = null
@@ -1751,4 +1802,7 @@ module.exports.setCancelFlag = setCancelFlag
 module.exports.isCancelled = isCancelled
 module.exports.clearCancelFlag = clearCancelFlag
 module.exports.generateOperationId = generateOperationId
+module.exports.LEGACY_REQUEST_PROFILE = LEGACY_REQUEST_PROFILE
+module.exports.resolveAccountRequestOptions = resolveAccountRequestOptions
+module.exports.applyAccountCredentialHeaders = applyAccountCredentialHeaders
 

@@ -14,6 +14,8 @@ class AccountBase(BaseModel):
     csecuuid: Optional[str] = None
     open_id: Optional[str] = None
     open_id_cipher: Optional[str] = None
+    union_id: Optional[str] = None
+    union_id_cipher: Optional[str] = None
     platform: Optional[str] = "windows"
 
 
@@ -29,6 +31,8 @@ class AccountUpdate(BaseModel):
     csecuuid: Optional[str] = None
     open_id: Optional[str] = None
     open_id_cipher: Optional[str] = None
+    union_id: Optional[str] = None
+    union_id_cipher: Optional[str] = None
     platform: Optional[str] = None
     status: Optional[str] = None
     disabled: Optional[int] = None
@@ -38,6 +42,14 @@ class AccountResponse(AccountBase):
     id: int
     user_id: Optional[int]
     platform: str = "windows"
+    credential_source: str = "legacy"
+    native_instance_id: Optional[str] = None
+    native_instance_code: Optional[str] = None
+    native_instance_name: Optional[str] = None
+    native_agent_name: Optional[str] = None
+    credential_refreshed_at: Optional[datetime] = None
+    credential_refresh_status: str = "idle"
+    credential_refresh_error: Optional[str] = None
     status: str
     disabled: int = 0
     last_check_time: Optional[datetime]
@@ -67,7 +79,10 @@ class AccountCaptureRequest(BaseModel):
     csecuuid: Optional[str] = None
     open_id: Optional[str] = None
     open_id_cipher: Optional[str] = None
+    union_id: Optional[str] = None
+    union_id_cipher: Optional[str] = None
     platform: Optional[str] = "windows"
+    switch_to_legacy: bool = False
 
 
 class AccountCheckRequest(BaseModel):

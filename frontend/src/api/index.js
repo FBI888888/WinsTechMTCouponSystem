@@ -56,7 +56,12 @@ export const accountsApi = {
   checkStatus: (data) => api.post('/api/accounts/check', data),
   scan: (id, statusFilter = 2) => api.post(`/api/accounts/${id}/scan?status_filter=${statusFilter}`),
   toggleDisabled: (id) => api.post(`/api/accounts/${id}/toggle-disabled`),
-  getRandomGiftId: (accountId) => api.get('/api/accounts/random-gift-id', { params: { account_id: accountId } })
+  getRandomGiftId: (accountId) => api.get('/api/accounts/random-gift-id', { params: { account_id: accountId } }),
+  getNativeInstances: () => api.get('/api/native-instances'),
+  getNativeHealth: () => api.get('/api/native-integration/health'),
+  createNativeRefreshJob: (data) => api.post('/api/accounts/native-refresh-jobs', data),
+  getNativeRefreshJob: (jobId) => api.get(`/api/accounts/native-refresh-jobs/${jobId}`),
+  deleteNativeBinding: (id) => api.delete(`/api/accounts/${id}/native-binding`)
 }
 
 // Orders API
@@ -112,7 +117,10 @@ export const settingsApi = {
   get: (key) => api.get(`/api/settings/${key}`),
   set: (key, data) => api.put(`/api/settings/${key}`, data),
   create: (data) => api.post('/api/settings', data),
-  delete: (key) => api.delete(`/api/settings/${key}`)
+  delete: (key) => api.delete(`/api/settings/${key}`),
+  getNativeIntegration: (config = {}) => api.get('/api/native-integration/config', config),
+  updateNativeIntegration: (data) => api.put('/api/native-integration/config', data),
+  testNativeIntegration: () => api.get('/api/native-integration/health')
 }
 
 // Stats API

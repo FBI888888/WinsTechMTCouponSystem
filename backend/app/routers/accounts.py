@@ -9,6 +9,7 @@ from app.database import get_db
 from app.models.user import User
 from app.models.account import MTAccount, AccountStatus
 from app.models.log import OperationLog
+from app.models.native_refresh import NativeCredentialRefreshJob
 from app.schemas.account import (
     AccountCreate, AccountUpdate, AccountResponse,
     AccountCaptureRequest, AccountCheckRequest, AccountCheckResponse,
@@ -129,7 +130,10 @@ def create_account(
         csecuuid=account.csecuuid,
         open_id=account.open_id,
         open_id_cipher=account.open_id_cipher,
+        union_id=account.union_id,
+        union_id_cipher=account.union_id_cipher,
         platform=_normalize_platform(account.platform, "android"),
+        credential_source="legacy",
         user_id=account.user_id or current_user.id if current_user.role == "admin" else current_user.id,
         status=AccountStatus.UNCHECKED
     )
@@ -170,6 +174,21 @@ def capture_account(
     # Check if userid already exists
     existing = db.query(MTAccount).filter(MTAccount.userid == request.userid).first()
     if existing:
+        if existing.credential_source == "native" and not request.switch_to_legacy:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "该账号已绑定 Native 实例。使用旧抓包凭据覆盖前必须显式传入 "
+                    "switch_to_legacy=true"
+                ),
+            )
+        if existing.credential_source == "native" and request.switch_to_legacy:
+            active_refresh = db.query(NativeCredentialRefreshJob).filter(
+                NativeCredentialRefreshJob.account_id == existing.id,
+                NativeCredentialRefreshJob.state.in_(("pending", "requesting", "waiting", "exchanging")),
+            ).first()
+            if active_refresh:
+                raise HTTPException(status_code=409, detail="该账号正在刷新凭据，请等待任务结束后再切换旧方式")
         # Update existing account
         existing.remark = request.remark
         existing.token = _encrypt_account_token(request.token)  # 加密存储
@@ -177,6 +196,16 @@ def capture_account(
         existing.csecuuid = request.csecuuid or existing.csecuuid
         existing.open_id = request.open_id or existing.open_id
         existing.open_id_cipher = request.open_id_cipher or existing.open_id_cipher
+        existing.union_id = request.union_id or existing.union_id
+        existing.union_id_cipher = request.union_id_cipher or existing.union_id_cipher
+        if existing.credential_source == "native" and request.switch_to_legacy:
+            existing.credential_source = "legacy"
+            existing.native_instance_id = None
+            existing.native_instance_code = None
+            existing.native_instance_name = None
+            existing.native_agent_name = None
+            existing.credential_refresh_status = "idle"
+            existing.credential_refresh_error = None
         # 平台字段：显式传入时始终更新并标记脏数据，确保写入数据库
         if request.platform is not None and str(request.platform).strip():
             existing.platform = _normalize_platform(request.platform, existing.platform or "android")
@@ -201,7 +230,11 @@ def capture_account(
         csecuuid=request.csecuuid,
         open_id=request.open_id,
         open_id_cipher=request.open_id_cipher,
+        union_id=request.union_id,
+        union_id_cipher=request.union_id_cipher,
         platform=platform_value,
+        credential_source="legacy",
+        user_id=current_user.id,
         status=parse_status(request.status) if request.status else AccountStatus.UNCHECKED
     )
     if request.status:
@@ -316,6 +349,15 @@ def update_account(
         raise HTTPException(status_code=404, detail="Account not found")
 
     update_data = account.model_dump(exclude_unset=True)
+    protected_native_fields = {
+        "userid", "token", "url", "csecuuid", "open_id", "open_id_cipher",
+        "union_id", "union_id_cipher",
+    }
+    if db_account.credential_source == "native" and protected_native_fields.intersection(update_data):
+        raise HTTPException(
+            status_code=409,
+            detail="Native 账号的身份凭据只能通过刷新任务更新；请先解除绑定再使用旧方式编辑",
+        )
     for field, value in update_data.items():
         # 如果是 token 字段，需要加密
         if field == "token" and value:
@@ -385,11 +427,16 @@ async def check_accounts_status(
 
     results = []
     for req in check_request:
-        result = await check_account_status(req)
+        account = account_map.get(req.userid)
+        if account and account.credential_source == "native":
+            from app.services.meituan.scanner import ScheduledTaskService
+            is_valid = await ScheduledTaskService().check_account_validity(account)
+            result = AccountCheckResponse(success=True, code=0 if is_valid else -1)
+        else:
+            result = await check_account_status(req)
         results.append(result)
 
         # 更新账号状态
-        account = account_map.get(req.userid)
         if account:
             account.status = AccountStatus.NORMAL if result.code == 0 else AccountStatus.INVALID
             account.last_check_time = datetime.now()

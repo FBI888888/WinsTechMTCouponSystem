@@ -7,6 +7,7 @@ import { confirm } from '../stores/confirmStore'
 import { formatCountSummary, getErrorMessage, getResultErrorMessage, isAbortError } from '../utils/requestFeedback'
 import { createErrorQueryResult, createSuccessQueryResult, QUERY_RESULT_STATUS, stripPlaceholderCoupons } from '../utils/queryResult'
 import CouponQueryResultDialog from '../components/CouponQueryResultDialog'
+import { accountToElectronPayload } from '../utils/meituanCredential'
 
 // 时间范围选项
 const TIME_RANGE_OPTIONS = [
@@ -777,14 +778,7 @@ function OrderListPage() {
         let queryResult
         try {
           queryResult = await window.electronAPI.rebateQueryOne({
-            account: {
-              userid: account.userid,
-              token: account.token,
-              csecuuid: account.csecuuid || '',
-              openId: account.open_id || '',
-              openIdCipher: account.open_id_cipher || '',
-              platform: account.platform || 'android'
-            },
+            account: accountToElectronPayload(account),
             orderId: order.order_view_id
           })
         } catch (error) {
@@ -949,14 +943,7 @@ function OrderListPage() {
         result = await couponQueryInFlightRef.current[cacheKey]
       } else {
         const requestPromise = window.electronAPI.rebateQueryOne({
-          account: {
-            userid: account.userid,
-            token: account.token,
-            csecuuid: account.csecuuid || '',
-            openId: account.open_id || '',
-            openIdCipher: account.open_id_cipher || '',
-            platform: account.platform || 'android'
-          },
+          account: accountToElectronPayload(account),
           orderId: order.order_view_id
         })
         couponQueryInFlightRef.current[cacheKey] = requestPromise

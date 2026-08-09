@@ -32,8 +32,9 @@ export const getErrorMessage = (error, fallback = '操作失败') => {
     if (joined) return joined
   }
 
-  if (detail && typeof detail === 'object' && typeof detail.msg === 'string') {
-    return detail.msg
+  if (detail && typeof detail === 'object') {
+    if (typeof detail.message === 'string') return detail.message
+    if (typeof detail.msg === 'string') return detail.msg
   }
 
   return pickMessage(

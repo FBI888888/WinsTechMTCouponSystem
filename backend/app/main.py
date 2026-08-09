@@ -19,7 +19,7 @@ if hasattr(time, 'tzset'):
 
 from app.config import settings
 from app.database import init_db, SessionLocal, get_db, engine
-from app.routers import auth, accounts, users, orders, coupons, gift_claims, logs, settings as settings_router, stats
+from app.routers import auth, accounts, native_integration, users, orders, coupons, gift_claims, logs, settings as settings_router, stats
 
 # 跨平台文件锁支持
 try:
@@ -167,6 +167,16 @@ async def lifespan(app: FastAPI):
     # Start scheduler
     setup_scheduler()
 
+    # Resume persisted Native refresh jobs after a process restart. Database
+    # leases and unique active keys prevent duplicate refreshes across workers.
+    try:
+        from app.services.native_credentials import recover_native_refresh_jobs
+        recovered = recover_native_refresh_jobs()
+        if recovered:
+            logger.info(f"[Native] Scheduled {recovered} persisted refresh job(s) for recovery")
+    except Exception as e:
+        logger.warning(f"[Native] Refresh job recovery failed: {e}")
+
     # 一次性数据迁移：修正已有"礼物已使用"订单的 order_status_bucket
     try:
         db = SessionLocal()
@@ -232,7 +242,7 @@ async def rate_limit_middleware(request: Request, call_next):
     client_ip = request.client.host if request.client else "unknown"
 
     # 排除健康检查和静态资源
-    if request.url.path in ["/", "/health", "/health/db", "/health/pool"]:
+    if request.url.path in ["/", "/livez", "/readyz", "/health", "/health/db", "/health/pool"]:
         response = await call_next(request)
         return response
 
@@ -277,6 +287,8 @@ async def rate_limit_middleware(request: Request, call_next):
 
 # Routers
 app.include_router(auth.router)
+# Keep this router before the dynamic /api/accounts/{account_id} routes.
+app.include_router(native_integration.router)
 app.include_router(accounts.router)
 app.include_router(users.router)
 app.include_router(orders.router)
@@ -299,6 +311,37 @@ def health():
         "status": "ok",
         "timestamp": datetime.now().isoformat()
     }
+
+
+@app.get("/livez")
+def livez():
+    """Process liveness probe; intentionally does not touch dependencies."""
+    return {
+        "status": "ok",
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@app.get("/readyz")
+def readyz(db = Depends(get_db)):
+    """Readiness probe used by Nginx and deployment validation."""
+    try:
+        db.execute(text("SELECT 1"))
+        return {
+            "status": "ok",
+            "database": "connected",
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception:
+        logger.exception("Readiness database check failed")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unavailable",
+                "database": "disconnected",
+                "timestamp": datetime.now().isoformat()
+            }
+        )
 
 
 @app.get("/health/db")

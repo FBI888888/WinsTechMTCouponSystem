@@ -8,6 +8,7 @@ from app.models.log import OperationLog, LoginLog
 from app.models.config import SystemConfig
 from app.models.api_key import APIKey
 from app.models.gift_claim import GiftClaim
+from app.models.native_refresh import NativeCredentialRefreshJob
 
 __all__ = [
     "User",
@@ -20,4 +21,5 @@ __all__ = [
     "SystemConfig",
     "APIKey",
     "GiftClaim",
+    "NativeCredentialRefreshJob",
 ]

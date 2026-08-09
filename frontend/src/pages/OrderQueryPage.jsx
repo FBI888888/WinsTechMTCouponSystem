@@ -12,6 +12,7 @@ import {
   stripPlaceholderCoupons
 } from '../utils/queryResult'
 import CouponQueryResultDialog from '../components/CouponQueryResultDialog'
+import { accountToElectronPayload } from '../utils/meituanCredential'
 
 function OrderQueryPage() {
   const {
@@ -109,14 +110,7 @@ function OrderQueryPage() {
       const { account, accountId } = resolved
 
       const meituanResult = await window.electronAPI.rebateQueryOne({
-        account: {
-          userid: account.userid,
-          token: account.token,
-          csecuuid: account.csecuuid || '',
-          openId: account.open_id || '',
-          openIdCipher: account.open_id_cipher || '',
-          platform: account.platform || 'android'
-        },
+        account: accountToElectronPayload(account),
         orderId: orderId.trim()
       })
 
@@ -346,14 +340,7 @@ function OrderQueryPage() {
 
     try {
       const meituanResult = await window.electronAPI.rebateQueryOne({
-        account: {
-          userid: account.userid,
-          token: account.token,
-          csecuuid: account.csecuuid || '',
-          openId: account.open_id || '',
-          openIdCipher: account.open_id_cipher || '',
-          platform: account.platform || 'android'
-        },
+        account: accountToElectronPayload(account),
         orderId: orderId.trim()
       })
 
